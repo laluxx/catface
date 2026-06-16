@@ -217,15 +217,19 @@ pub const Tty = struct {
         if (width == 0) return;
         var xx = x;
         var used: u16 = 0;
+        var truncated = false;
         var view = std.unicode.Utf8View.init(bytes) catch return;
         var it = view.iterator();
         while (it.nextCodepoint()) |cp| {
-            if (used >= width) break;
+            if (used >= width) {
+                truncated = true;
+                break;
+            }
             self.set(xx, y, cp, style);
             xx += 1;
             used += 1;
         }
-        if (used == width and width > 1) {
+        if (truncated and width > 1) {
             self.set(x + width - 1, y, '…', style);
         }
     }
@@ -317,6 +321,24 @@ pub const Tty = struct {
         return parseKey(buf[0..n]);
     }
 };
+
+pub fn clippedWouldTruncate(bytes: []const u8, width: u16) bool {
+    if (width == 0) return bytes.len != 0;
+    var used: u16 = 0;
+    var view = std.unicode.Utf8View.init(bytes) catch return false;
+    var it = view.iterator();
+    while (it.nextCodepoint()) |_| {
+        if (used >= width) return true;
+        used += 1;
+    }
+    return false;
+}
+
+test "text clipping does not ellipsize exact-width tags" {
+    try std.testing.expect(!clippedWouldTruncate("NOTE", 4));
+    try std.testing.expect(!clippedWouldTruncate("TODO", 4));
+    try std.testing.expect(clippedWouldTruncate("NOTE", 3));
+}
 
 pub fn parseKey(bytes: []const u8) Key {
     if (bytes.len == 0) return .none;

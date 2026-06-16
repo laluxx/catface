@@ -1,6 +1,6 @@
 .{
     .name = .catface,
-    .version = "0.5.0",
+    .version = "0.7.6",
     .fingerprint = 0xcc98b78d52b16d9d,
     .minimum_zig_version = "0.14.0",
     .dependencies = .{},
@@ -10,5 +10,6 @@
         "src",
         "examples",
         "README.md",
+        "catface.svg",
     },
 }

@@ -43,8 +43,8 @@ const Token = struct {
     text: []const u8,
 };
 
-const RelationOp = enum { out, in };
-const RelationSpec = struct {
+pub const RelationOp = enum { out, in };
+pub const RelationSpec = struct {
     op: RelationOp,
     lhs: []const u8,
     rhs: []const u8,
@@ -52,6 +52,7 @@ const RelationSpec = struct {
 };
 
 pub fn evaluate(allocator: std.mem.Allocator, ctx: *const model.Context, expr: []const u8, options: EvalOptions) !ResultList {
+    if (looksLikeTypeSignature(expr)) return evaluateTypeSignatureImpl(allocator, ctx, expr, options);
     if (findRelation(expr)) |rel| {
         return evaluateRelationImpl(allocator, ctx, null, rel, options);
     }
@@ -59,10 +60,62 @@ pub fn evaluate(allocator: std.mem.Allocator, ctx: *const model.Context, expr: [
 }
 
 pub fn evaluateIndexed(allocator: std.mem.Allocator, ctx: *const model.Context, idx: *const search_index.SearchIndex, expr: []const u8, options: EvalOptions) !ResultList {
+    if (looksLikeTypeSignature(expr)) return evaluateTypeSignatureImpl(allocator, ctx, expr, options);
     if (findRelation(expr)) |rel| {
         return evaluateRelationImpl(allocator, ctx, idx, rel, options);
     }
     return evaluateSimpleImpl(allocator, ctx, idx, expr, options);
+}
+
+fn looksLikeTypeSignature(expr_raw: []const u8) bool {
+    const expr = std.mem.trim(u8, expr_raw, " \t\r\n");
+    if (expr.len == 0 or std.mem.indexOf(u8, expr, "->") == null) return false;
+    if (std.mem.indexOf(u8, expr, "@") != null or std.mem.indexOf(u8, expr, "%") != null) return false;
+    if (std.mem.indexOf(u8, expr, "<-") != null) return false;
+    if (std.mem.startsWith(u8, expr, "title:") or std.mem.startsWith(u8, expr, "path:") or std.mem.startsWith(u8, expr, "id:")) return false;
+    if (findSpacedOp(expr, "->")) |pos| {
+        const lhs = std.mem.trim(u8, expr[0..pos], " \t\r\n");
+        const rhs = std.mem.trim(u8, expr[pos + 2 ..], " \t\r\n");
+        return typeSideLooksLikeType(lhs) and typeSideLooksLikeType(rhs);
+    }
+    return false;
+}
+
+fn typeSideLooksLikeType(side: []const u8) bool {
+    if (side.len == 0) return false;
+    var saw_typeish = false;
+    var toks = std.mem.tokenizeAny(u8, side, " \t()[]{}.,");
+    while (toks.next()) |tok| {
+        if (tok.len == 0) continue;
+        if (tok.len == 1 and std.ascii.isAlphabetic(tok[0])) { saw_typeish = true; continue; }
+        if (std.ascii.isUpper(tok[0])) { saw_typeish = true; continue; }
+        if (std.mem.eql(u8, tok, "Unit") or std.mem.eql(u8, tok, "Bool") or std.mem.eql(u8, tok, "Int") or std.mem.eql(u8, tok, "String")) saw_typeish = true;
+    }
+    return saw_typeish;
+}
+
+fn evaluateTypeSignatureImpl(allocator: std.mem.Allocator, ctx: *const model.Context, expr_raw: []const u8, options: EvalOptions) !ResultList {
+    const expr = std.mem.trim(u8, expr_raw, " \t\r\n");
+    var ranked = std.array_list.Managed(Result).init(allocator);
+    defer ranked.deinit();
+    const limit = options.limit;
+    try ranked.ensureTotalCapacity(@min(limit, ctx.objects.items.len));
+    for (ctx.objects.items, 0..) |obj, i| {
+        if (obj.kind != .function_kind) continue;
+        if (!signatureMatches(obj, expr)) continue;
+        const sc = 420 + rankObject(obj, &[_][]const u8{expr});
+        insertTop(&ranked, .{ .object_index = i, .score = sc }, limit);
+    }
+    const out = try allocator.dupe(Result, ranked.items[0..@min(ranked.items.len, limit)]);
+    return .{ .allocator = allocator, .items = out };
+}
+
+fn signatureMatches(obj: model.Object, expr: []const u8) bool {
+    if (text.containsFold(obj.preview, expr) or text.containsFold(obj.title, expr) or text.containsFold(obj.tags, expr)) return true;
+    const arrow = std.mem.indexOf(u8, expr, "->") orelse return false;
+    const lhs = std.mem.trim(u8, expr[0..arrow], " \t");
+    const rhs = std.mem.trim(u8, expr[arrow + 2 ..], " \t");
+    return lhs.len != 0 and rhs.len != 0 and text.containsFold(obj.preview, lhs) and text.containsFold(obj.preview, rhs) and text.containsFold(obj.preview, "->");
 }
 
 fn evaluateSimpleImpl(allocator: std.mem.Allocator, ctx: *const model.Context, idx_opt: ?*const search_index.SearchIndex, expr: []const u8, options: EvalOptions) !ResultList {
@@ -168,14 +221,9 @@ fn evaluateSimpleImpl(allocator: std.mem.Allocator, ctx: *const model.Context, i
 }
 
 fn evaluateRelationImpl(allocator: std.mem.Allocator, ctx: *const model.Context, idx_opt: ?*const search_index.SearchIndex, rel: RelationSpec, options: EvalOptions) !ResultList {
-    var lhs = try evaluateSimpleImpl(allocator, ctx, idx_opt, rel.lhs, .{ .limit = ctx.objects.items.len });
-    defer lhs.deinit();
-    var rhs = try evaluateSimpleImpl(allocator, ctx, idx_opt, rel.rhs, .{ .limit = ctx.objects.items.len });
-    defer rhs.deinit();
-
-    var lhs_set = try boolSetFromResults(allocator, ctx, lhs.items);
+    var lhs_set = try evaluateSetOnlyImpl(allocator, ctx, idx_opt, rel.lhs);
     defer lhs_set.deinit();
-    var rhs_set = try boolSetFromResults(allocator, ctx, rhs.items);
+    var rhs_set = try evaluateSetOnlyImpl(allocator, ctx, idx_opt, rel.rhs);
     defer rhs_set.deinit();
     var keep = try std.array_list.Managed(bool).initCapacity(allocator, ctx.objects.items.len);
     defer keep.deinit();
@@ -210,7 +258,8 @@ fn evaluateRelationImpl(allocator: std.mem.Allocator, ctx: *const model.Context,
     return rankSet(allocator, ctx, keep.items, relation_terms.items, bonus.items, options.limit);
 }
 
-fn findRelation(expr: []const u8) ?RelationSpec {
+pub fn findRelation(expr: []const u8) ?RelationSpec {
+    if (looksLikeTypeSignature(expr)) return null;
     if (findSpacedOp(expr, "->")) |pos| {
         const lhs = std.mem.trim(u8, expr[0..pos], " \t\r\n");
         const rhs = std.mem.trim(u8, expr[pos + 2 ..], " \t\r\n");
@@ -252,6 +301,53 @@ fn findEdgeHint(expr: []const u8) ?model.EdgeKind {
         }
     }
     return null;
+}
+
+fn evaluateSetOnlyImpl(allocator: std.mem.Allocator, ctx: *const model.Context, idx_opt: ?*const search_index.SearchIndex, expr: []const u8) !std.array_list.Managed(bool) {
+    var tokens = try tokenize(allocator, expr);
+    defer tokens.deinit();
+    var set = try initAll(allocator, ctx);
+    var edge_hint: ?model.EdgeKind = null;
+    for (tokens.items) |tok| {
+        switch (tok.kind) {
+            .word => {
+                if (idx_opt) |idx| { try applyWordIndexed(allocator, ctx, idx, &set, tok.text); } else { try applyWord(ctx, &set, tok.text); }
+            },
+            .kind_filter => {
+                if (idx_opt) |idx| { try applyKindIndexed(ctx, idx, &set, tok.text); } else { try applyKind(ctx, &set, tok.text); }
+            },
+            .path_filter => {
+                if (idx_opt) |idx| { try applyPathIndexed(ctx, idx, &set, tok.text); } else { try applyPath(ctx, &set, tok.text); }
+            },
+            .id_filter => try applyId(ctx, &set, tok.text),
+            .edge_filter => {
+                const k = model.Context.parseEdgeKind(tok.text);
+                edge_hint = k;
+                if (idx_opt) |idx| { try applyEdgeKindIndexed(ctx, idx, &set, k); } else { try applyEdgeKind(ctx, &set, k); }
+            },
+            .exact_filter => {
+                if (idx_opt) |idx| { try applyExactIndexed(allocator, ctx, idx, &set, tok.text); } else { try applyExact(ctx, &set, tok.text); }
+            },
+            .op_out => {
+                if (idx_opt) |idx| { try expandEdgesIndexed(allocator, ctx, idx, &set, .out, edge_hint); } else { try expandEdges(allocator, ctx, &set, .out, edge_hint); }
+            },
+            .op_in => {
+                if (idx_opt) |idx| { try expandEdgesIndexed(allocator, ctx, idx, &set, .in, edge_hint); } else { try expandEdges(allocator, ctx, &set, .in, edge_hint); }
+            },
+            .op_neighborhood => {
+                if (idx_opt) |idx| { try expandEdgesIndexed(allocator, ctx, idx, &set, .both, edge_hint); } else { try expandEdges(allocator, ctx, &set, .both, edge_hint); }
+            },
+            .op_project => {
+                if (idx_opt) |idx| { try projectSupersetIndexed(allocator, ctx, idx, &set); } else { try projectSuperset(allocator, ctx, &set); }
+            },
+            .op_clear => {
+                for (set.items) |*b| b.* = true;
+                edge_hint = null;
+            },
+            .lparen, .rparen => {},
+        }
+    }
+    return set;
 }
 
 fn boolSetFromResults(allocator: std.mem.Allocator, ctx: *const model.Context, items: []const Result) !std.array_list.Managed(bool) {
@@ -309,23 +405,53 @@ fn rankSet(
     bonus: ?[]const i32,
     limit: usize,
 ) !ResultList {
+    if (limit == 0) {
+        return .{ .allocator = allocator, .items = try allocator.alloc(Result, 0) };
+    }
+    var keep_count: usize = 0;
+    for (set) |keep| {
+        if (keep) keep_count += 1;
+    }
     var ranked = std.array_list.Managed(Result).init(allocator);
     defer ranked.deinit();
-    for (set, 0..) |keep, i| {
-        if (!keep) continue;
-        const obj = ctx.objects.items[i];
-        var sc = rankObject(obj, terms);
-        if (bonus) |b| {
-            if (i < b.len) {
-                sc += b[i];
-            }
+    if (keep_count <= limit) {
+        try ranked.ensureTotalCapacity(keep_count);
+        for (set, 0..) |keep, i| {
+            if (!keep) continue;
+            try ranked.append(.{ .object_index = i, .score = scoreObject(ctx, i, terms, bonus) });
         }
-        try ranked.append(.{ .object_index = i, .score = sc });
+        std.mem.sort(Result, ranked.items, ctx, lessResult);
+    } else {
+        try ranked.ensureTotalCapacity(limit);
+        for (set, 0..) |keep, i| {
+            if (!keep) continue;
+            insertTop(&ranked, .{ .object_index = i, .score = scoreObject(ctx, i, terms, bonus) }, limit);
+        }
     }
-    std.mem.sort(Result, ranked.items, ctx, lessResult);
     const n = @min(ranked.items.len, limit);
     const out = try allocator.dupe(Result, ranked.items[0..n]);
     return .{ .allocator = allocator, .items = out };
+}
+
+fn scoreObject(ctx: *const model.Context, i: usize, terms: []const []const u8, bonus: ?[]const i32) i32 {
+    var sc = rankObject(ctx.objects.items[i], terms);
+    if (bonus) |b| { if (i < b.len) sc += b[i]; }
+    return sc;
+}
+
+fn insertTop(ranked: *std.array_list.Managed(Result), item: Result, limit: usize) void {
+    if (ranked.items.len == 0) {
+        ranked.appendAssumeCapacity(item);
+        return;
+    }
+    if (ranked.items.len == limit and item.score <= ranked.items[ranked.items.len - 1].score) return;
+    if (ranked.items.len < limit) ranked.appendAssumeCapacity(item) else ranked.items[ranked.items.len - 1] = item;
+    var i = ranked.items.len - 1;
+    while (i > 0 and ranked.items[i].score > ranked.items[i - 1].score) : (i -= 1) {
+        const tmp = ranked.items[i - 1];
+        ranked.items[i - 1] = ranked.items[i];
+        ranked.items[i] = tmp;
+    }
 }
 
 fn lessResult(ctx: *const model.Context, a: Result, b: Result) bool {
@@ -358,6 +484,7 @@ fn rankObject(obj: model.Object, terms: []const []const u8) i32 {
         .done => 14,
         .info => 12,
         .source => 10,
+        .function_kind => 36,
         .report => 10,
         else => 0,
     };
@@ -460,7 +587,7 @@ fn fieldSpec(word: []const u8) ?FieldSpec {
     const pos = std.mem.indexOfScalar(u8, word, ':') orelse return null;
     if (pos == 0 or pos + 1 >= word.len) return null;
     const field = word[0..pos];
-    if (!std.mem.eql(u8, field, "title") and !std.mem.eql(u8, field, "path") and !std.mem.eql(u8, field, "id") and !std.mem.eql(u8, field, "tag") and !std.mem.eql(u8, field, "preview")) return null;
+    if (!std.mem.eql(u8, field, "title") and !std.mem.eql(u8, field, "path") and !std.mem.eql(u8, field, "id") and !std.mem.eql(u8, field, "tag") and !std.mem.eql(u8, field, "preview") and !std.mem.eql(u8, field, "type") and !std.mem.eql(u8, field, "sig") and !std.mem.eql(u8, field, "signature") and !std.mem.eql(u8, field, "function")) return null;
     return .{ .field = field, .needle = word[pos + 1 ..] };
 }
 
@@ -468,6 +595,14 @@ fn applyField(ctx: *const model.Context, set: *std.array_list.Managed(bool), fie
     for (set.items, 0..) |*keep, i| {
         if (!keep.*) continue;
         const obj = ctx.objects.items[i];
+        if (std.mem.eql(u8, field, "type") or std.mem.eql(u8, field, "sig") or std.mem.eql(u8, field, "signature")) {
+            keep.* = obj.kind == .function_kind and text.containsFold(obj.preview, needle);
+            continue;
+        }
+        if (std.mem.eql(u8, field, "function")) {
+            keep.* = obj.kind == .function_kind and (text.containsFold(obj.title, needle) or text.containsFold(obj.id, needle) or text.containsFold(obj.preview, needle));
+            continue;
+        }
         const hay = if (std.mem.eql(u8, field, "title")) obj.title else if (std.mem.eql(u8, field, "path")) obj.path else if (std.mem.eql(u8, field, "id")) obj.id else if (std.mem.eql(u8, field, "tag")) obj.tags else obj.preview;
         keep.* = text.containsFold(hay, needle);
     }
@@ -504,6 +639,16 @@ fn applyPath(ctx: *const model.Context, set: *std.array_list.Managed(bool), path
 
 
 fn applyPathIndexed(ctx: *const model.Context, idx: *const search_index.SearchIndex, set: *std.array_list.Managed(bool), ns: []const u8) !void {
+    if (idx.objectsOfLane(ns)) |lane| {
+        const marks = try ctx.allocator.alloc(bool, ctx.objects.items.len);
+        defer ctx.allocator.free(marks);
+        @memset(marks, false);
+        for (lane) |object_index| marks[object_index] = true;
+        for (set.items, 0..) |*keep, i| {
+            if (keep.*) keep.* = marks[i];
+        }
+        return;
+    }
     if (std.mem.eql(u8, ns, "orphans") or std.mem.eql(u8, ns, "orphan")) {
         for (set.items, 0..) |*keep, i| {
             if (keep.*) keep.* = idx.isOrphan(i);
@@ -555,6 +700,7 @@ fn matchNamespace(obj: model.Object, ns: []const u8) bool {
     if (std.mem.eql(u8, ns, "source") or std.mem.eql(u8, ns, "src")) {
         return obj.kind == .source or obj.kind == .script or contains(obj.tags, "@source") or contains(obj.path, "src/") or contains(obj.path, ".c") or contains(obj.path, ".h") or contains(obj.path, ".zig");
     }
+    if (std.mem.eql(u8, ns, "functions") or std.mem.eql(u8, ns, "function") or std.mem.eql(u8, ns, "fn") or std.mem.eql(u8, ns, "methods") or std.mem.eql(u8, ns, "method")) return obj.kind == .function_kind or contains(obj.tags, "@functions");
     if (std.mem.eql(u8, ns, "todo") or std.mem.eql(u8, ns, "todos")) return obj.kind == .todo or contains(obj.title, "TODO") or contains(obj.preview, "TODO");
     if (std.mem.eql(u8, ns, "done")) return obj.kind == .done or contains(obj.title, "DONE") or contains(obj.preview, "DONE");
     if (std.mem.eql(u8, ns, "obs") or std.mem.eql(u8, ns, "observations")) return contains(obj.title, "OBS") or contains(obj.preview, "[OBS") or contains(obj.preview, "OBS");
@@ -772,6 +918,19 @@ test "exact token search uses equals prefix" {
     try std.testing.expect(std.mem.eql(u8, ctx.objects.items[res.items[0].object_index].id, "reader.exact"));
 }
 
+test "relation set evaluation skips ranking lhs rhs but preserves participants" {
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "test.reader", .kind = .test_kind, .title = "reader test", .path = "tests/reader.mon", .preview = "TEST reader" });
+    _ = try ctx.addObject(.{ .id = "src.reader", .kind = .source, .title = "reader source", .path = "src/reader.c", .preview = "reader implementation" });
+    _ = try ctx.addEdge(.{ .id = "e1", .kind = .verifies, .src = "test.reader", .dst = "src.reader" });
+    var idx = try search_index.SearchIndex.build(std.testing.allocator, &ctx);
+    defer idx.deinit();
+    var res = try evaluateIndexed(std.testing.allocator, &ctx, &idx, "%verifies @tests -> reader", .{ .limit = 8 });
+    defer res.deinit();
+    try std.testing.expect(res.items.len >= 2);
+}
+
 test "relation search finds morphism participants" {
     var ctx = try model.Context.init(std.testing.allocator, ".");
     defer ctx.deinit();
@@ -807,6 +966,10 @@ test "namespace lanes cover todo records notes and language surfaces" {
     var bugs = try evaluate(std.testing.allocator, &ctx, "@bugs", .{ .limit = 16 });
     defer bugs.deinit();
     try std.testing.expect(resultHas(&ctx, bugs.items, "todo.reader-gap"));
+
+    var info = try evaluate(std.testing.allocator, &ctx, "@info wisp", .{ .limit = 16 });
+    defer info.deinit();
+    try std.testing.expect(resultHas(&ctx, info.items, "note.wisp"));
 }
 
 test "category graph operators and edge filters are evaluated" {
@@ -879,6 +1042,7 @@ test "examples query catalogues parse and evaluate" {
         "examples/queries.catq",
         "examples/catalogue.catq",
         "examples/perf.catq",
+        "examples/cache.catq",
     };
     var checked: usize = 0;
     for (files) |file| {
@@ -947,6 +1111,73 @@ test "indexed evaluator performance smoke on synthetic corpus" {
         res.deinit();
     }
     const elapsed = @import("perf.zig").nanosSince(start);
-    std.debug.print("catface perf: 64 indexed needlefast queries over {d} objects took {d}ns\n", .{ ctx.objects.items.len, elapsed });
     try std.testing.expect(elapsed < 60_000_000_000);
+}
+
+test "query language lanes fields exact and relation syntax compose" {
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "test.reader.layout", .kind = .test_kind, .title = "reader layout test", .path = "tests/reader.mon", .preview = "TEST verifies reader layout" });
+    _ = try ctx.addObject(.{ .id = "src.reader", .kind = .source, .title = "reader source", .path = "src/reader.c", .preview = "reader implementation" });
+    _ = try ctx.addObject(.{ .id = "note.reader.obs", .kind = .record, .title = "OBS reader note", .path = "context/reader.org", .preview = "[OBS] reader accepts layout" });
+    _ = try ctx.addObject(.{ .id = "todo.reader", .kind = .todo, .title = "TODO reader", .path = "context/todo.org", .preview = "TODO reader performance" });
+    _ = try ctx.addEdge(.{ .id = "e.verify", .kind = .verifies, .src = "test.reader.layout", .dst = "src.reader" });
+    _ = try ctx.addEdge(.{ .id = "e.support", .kind = .supports, .src = "note.reader.obs", .dst = "todo.reader" });
+    var idx = try search_index.SearchIndex.build(std.testing.allocator, &ctx);
+    defer idx.deinit();
+
+    const samples = [_][]const u8{
+        "@tests",
+        "@notes",
+        "@todo title:reader",
+        "=reader",
+        "%verifies",
+        "@tests -> reader",
+        "reader <- @tests",
+        "@obs -> @todo",
+    };
+    for (samples) |expr| {
+        var res = try evaluateIndexed(std.testing.allocator, &ctx, &idx, expr, .{ .limit = 8 });
+        defer res.deinit();
+        try std.testing.expect(res.items.len != 0);
+    }
+}
+
+test "field filters are uniform over id title path preview tag" {
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "idneedle", .kind = .record, .title = "titleneedle", .path = "pathneedle/file.org", .tags = "tagneedle", .preview = "previewneedle" });
+    var idx = try search_index.SearchIndex.build(std.testing.allocator, &ctx);
+    defer idx.deinit();
+    const samples = [_][]const u8{ "id:idneedle", "title:titleneedle", "path:pathneedle", "tag:tagneedle", "preview:previewneedle" };
+    for (samples) |expr| {
+        var res = try evaluateIndexed(std.testing.allocator, &ctx, &idx, expr, .{ .limit = 4 });
+        defer res.deinit();
+        try std.testing.expect(res.items.len == 1);
+    }
+}
+
+
+test "type arrows search functions instead of relation syntax" {
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "function:core/id.mon:id", .kind = .function_kind, .title = "id", .path = "core/id.mon", .preview = "function id :: a -> a", .tags = "@functions @core" });
+    _ = try ctx.addObject(.{ .id = "source:reader.c", .kind = .source, .title = "reader", .path = "reader.c", .preview = "reader source" });
+    try std.testing.expect(findRelation("a -> a") == null);
+    var res = try evaluate(std.testing.allocator, &ctx, "a -> a", .{ .limit = 8 });
+    defer res.deinit();
+    try std.testing.expect(res.items.len == 1);
+    try std.testing.expect(ctx.objects.items[res.items[0].object_index].kind == .function_kind);
+}
+
+test "relation arrows still work for object expressions" {
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "test.reader", .kind = .test_kind, .title = "reader test", .preview = "reader" });
+    _ = try ctx.addObject(.{ .id = "source.reader", .kind = .source, .title = "reader", .preview = "reader" });
+    _ = try ctx.addEdge(.{ .id = "e", .kind = .verifies, .src = "test.reader", .dst = "source.reader" });
+    try std.testing.expect(findRelation("@tests -> reader") != null);
+    var res = try evaluate(std.testing.allocator, &ctx, "@tests -> reader", .{ .limit = 8 });
+    defer res.deinit();
+    try std.testing.expect(res.items.len >= 1);
 }

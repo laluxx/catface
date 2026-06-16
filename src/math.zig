@@ -63,6 +63,7 @@ pub const Distribution = struct {
     concept: usize = 0,
     test_count: usize = 0,
     source: usize = 0,
+    function_count: usize = 0,
     info: usize = 0,
     todo: usize = 0,
     done: usize = 0,
@@ -78,6 +79,7 @@ pub const Distribution = struct {
             .concept => { self.concept += 1; },
             .test_kind => { self.test_count += 1; },
             .source => { self.source += 1; },
+            .function_kind => { self.function_count += 1; },
             .info => { self.info += 1; },
             .todo => { self.todo += 1; },
             .done => { self.done += 1; },
@@ -86,7 +88,7 @@ pub const Distribution = struct {
     }
 
     pub fn total(self: Distribution) usize {
-        return self.file + self.heading + self.record + self.script + self.report + self.concept + self.test_count + self.source + self.info + self.todo + self.done + self.unknown;
+        return self.file + self.heading + self.record + self.script + self.report + self.concept + self.test_count + self.source + self.function_count + self.info + self.todo + self.done + self.unknown;
     }
 };
 

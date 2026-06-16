@@ -13,6 +13,12 @@ pub const HistoryEntry = struct {
     focus_id: []const u8,
 };
 
+const QueryCacheEntry = struct {
+    results: []usize,
+};
+
+const QueryCacheLimit = 64;
+
 const BlinkDelayMs: i64 = 500;
 const BlinkIntervalMs: i64 = 500;
 
@@ -28,6 +34,8 @@ pub const State = struct {
     focus: ?usize = null,
     message: []const u8 = "",
     history: std.array_list.Managed(HistoryEntry),
+    query_cache: std.StringHashMap(QueryCacheEntry),
+    focus_stack: std.array_list.Managed(usize),
     history_index: usize = 0,
     cursor: usize = 0,
     frame_ms: i64 = 0,
@@ -48,6 +56,8 @@ pub const State = struct {
             .kill_ring = std.array_list.Managed(u8).init(allocator),
             .results = std.array_list.Managed(usize).init(allocator),
             .history = std.array_list.Managed(HistoryEntry).init(allocator),
+            .query_cache = std.StringHashMap(QueryCacheEntry).init(allocator),
+            .focus_stack = std.array_list.Managed(usize).init(allocator),
             .last_input_ms = 0,
         };
     }
@@ -61,6 +71,9 @@ pub const State = struct {
             self.allocator.free(h.focus_id);
         }
         self.history.deinit();
+        self.clearQueryCache();
+        self.query_cache.deinit();
+        self.focus_stack.deinit();
     }
 
     pub fn refresh(self: *State, ctx: *const model.Context) !void {
@@ -77,6 +90,14 @@ pub const State = struct {
             return;
         }
         const start = perf.nowNs();
+        if (self.query_cache.get(self.query_buffer.items)) |cached| {
+            self.results.clearRetainingCapacity();
+            try self.results.appendSlice(cached.results);
+            self.finishRefreshFromResults();
+            self.perf_stats.last_query_ns = perf.nanosSince(start);
+            self.perf_stats.cached_refreshes += 1;
+            return;
+        }
         var res = blk: {
             if (idx_opt) |idx| {
                 break :blk try query.evaluateIndexed(self.allocator, ctx, idx, self.query_buffer.items, .{ .limit = 500 });
@@ -87,14 +108,38 @@ pub const State = struct {
         defer res.deinit();
         self.results.clearRetainingCapacity();
         for (res.items) |r| try self.results.append(r.object_index);
+        try self.rememberQueryResult(self.query_buffer.items, self.results.items);
+        self.finishRefreshFromResults();
+        self.perf_stats.last_query_ns = perf.nanosSince(start);
+        self.perf_stats.query_runs += 1;
+    }
+
+    fn finishRefreshFromResults(self: *State) void {
         if (self.selected >= self.results.items.len) self.selected = if (self.results.items.len == 0) 0 else self.results.items.len - 1;
         self.focus = if (self.results.items.len == 0) null else self.results.items[self.selected];
         self.ensureVisible(self.result_view_rows);
         if (self.cursor > self.query_buffer.items.len) self.cursor = self.query_buffer.items.len;
-        self.perf_stats.last_query_ns = perf.nanosSince(start);
-        self.perf_stats.query_runs += 1;
         self.query_dirty = false;
         self.screen_dirty = true;
+    }
+
+    fn rememberQueryResult(self: *State, query_text: []const u8, result_indexes: []const usize) !void {
+        if (query_text.len == 0 or result_indexes.len == 0) return;
+        if (self.query_cache.count() >= QueryCacheLimit) self.clearQueryCache();
+        const key = try self.allocator.dupe(u8, query_text);
+        errdefer self.allocator.free(key);
+        const values = try self.allocator.dupe(usize, result_indexes);
+        errdefer self.allocator.free(values);
+        try self.query_cache.put(key, .{ .results = values });
+    }
+
+    fn clearQueryCache(self: *State) void {
+        var it = self.query_cache.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*.results);
+        }
+        self.query_cache.clearRetainingCapacity();
     }
 
 
@@ -331,6 +376,11 @@ pub const State = struct {
         self.move(delta);
     }
 
+    pub fn pageResults(self: *State, dir: isize) void {
+        const rows: isize = @intCast(self.result_view_rows);
+        self.move(rows * dir);
+    }
+
     pub fn moveTreeCursor(self: *State, delta: isize) void {
         self.relation_tree.moveCursor(delta);
         self.screen_dirty = true;
@@ -346,10 +396,35 @@ pub const State = struct {
         self.screen_dirty = true;
     }
 
+    pub fn pushFocusBack(self: *State, idx: ?usize) !void {
+        if (idx) |value| {
+            if (self.focus_stack.items.len == 0 or self.focus_stack.items[self.focus_stack.items.len - 1] != value) {
+                try self.focus_stack.append(value);
+            }
+        }
+    }
+
+    pub fn goBackFocus(self: *State) bool {
+        if (self.focus_stack.items.len == 0) return false;
+        const value = self.focus_stack.items[self.focus_stack.items.len - 1];
+        _ = self.focus_stack.pop();
+        self.focus = value;
+        for (self.results.items, 0..) |object_index, result_index| {
+            if (object_index == value) {
+                self.selected = result_index;
+                break;
+            }
+        }
+        self.ensureVisible(self.result_view_rows);
+        self.message = "relation back";
+        self.screen_dirty = true;
+        return true;
+    }
+
 };
 
 pub fn helpText() []const u8 {
-    return "Type naturally. Words fuzzy-search everything. Use @todo/@hot/@blocked/@notes/@tests/@source/@reader/@wisp, :Kind, title:/path:/id:/preview:/tag:, %edge-kind, ?id/#id, a -> b, a <- b, >, <, ~, proj.";
+    return "Type naturally. Words fuzzy-search everything. Use @todo/@hot/@blocked/@notes/@functions/@tests/@source/@reader/@wisp, :Kind, title:/path:/id:/preview:/tag:/function:/sig:, %edge-kind, ?id/#id, a -> a, a -> b, a <- b, >, <, ~, proj.";
 }
 
 test "state refresh caches results until query changes" {
@@ -370,4 +445,35 @@ test "state refresh caches results until query changes" {
     try state.appendUtf8('x');
     try state.refresh(&ctx);
     try std.testing.expect(state.perf_stats.query_runs == runs + 1);
+}
+
+test "query result cache serves repeated dirty queries without recompute" {
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "todo.a", .kind = .todo, .title = "TODO A", .path = "context/a.org", .preview = "TODO A" });
+    var idx = try search_index.SearchIndex.build(std.testing.allocator, &ctx);
+    defer idx.deinit();
+    var state = try State.init(std.testing.allocator);
+    defer state.deinit();
+    try state.setQuery("@todo");
+    try state.refreshIndexed(&ctx, &idx);
+    const runs = state.perf_stats.query_runs;
+    try state.setQuery("@todo");
+    try state.refreshIndexed(&ctx, &idx);
+    try std.testing.expect(state.perf_stats.query_runs == runs);
+    try std.testing.expect(state.perf_stats.cached_refreshes >= 1);
+}
+
+test "relation focus stack supports h-style back navigation" {
+    var state = try State.init(std.testing.allocator);
+    defer state.deinit();
+    try state.results.appendSlice(&[_]usize{ 2, 4, 8 });
+    state.focus = 4;
+    state.selected = 1;
+    try state.pushFocusBack(state.focus);
+    state.focus = 8;
+    state.selected = 2;
+    try std.testing.expect(state.goBackFocus());
+    try std.testing.expect(state.focus.? == 4);
+    try std.testing.expect(state.selected == 1);
 }

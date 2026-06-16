@@ -31,6 +31,9 @@ const command_palette = @import("command_palette.zig");
 const law_tests = @import("law_tests.zig");
 const manual = @import("manual.zig");
 const app = @import("app.zig");
+const file_cache = @import("file_cache.zig");
+const perf_report = @import("perf_report.zig");
+const context_cache = @import("context_cache.zig");
 
 // This file is intentionally a test harness, not a library root. The shipped
 // tool is an executable; tests import every module so Zig type-checks them and
@@ -68,4 +71,7 @@ test "catface module graph type-checks" {
     _ = law_tests;
     _ = manual;
     _ = app;
+    _ = file_cache;
+    _ = perf_report;
+    _ = context_cache;
 }

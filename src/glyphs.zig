@@ -10,6 +10,7 @@ pub fn kind(k: model.ObjectKind) []const u8 {
         .concept => "◯",
         .test_kind => "T",
         .source => "S",
+        .function_kind => "λ",
         .info => "I",
         .todo => "!",
         .done => "✓",

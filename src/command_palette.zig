@@ -17,6 +17,7 @@ pub const Action = enum {
     quick_wisp,
     quick_reader,
     quick_codegen,
+    quick_functions,
     query_verifies,
     query_blocks,
     query_outgoing,
@@ -53,6 +54,7 @@ pub const commands = [_]CommandItem{
     .{ .action = .quick_wisp, .name = "wisp", .description = "jump to Wisp language surface", .query_insert = "@wisp" },
     .{ .action = .quick_reader, .name = "reader", .description = "jump to reader/parser surface", .query_insert = "@reader" },
     .{ .action = .quick_codegen, .name = "codegen", .description = "jump to codegen/runtime surface", .query_insert = "@codegen" },
+    .{ .action = .quick_functions, .name = "functions", .description = "jump to first-class core/prelude functions", .query_insert = "@functions" },
     .{ .action = .query_verifies, .name = "verifies", .description = "insert %verifies edge filter", .query_insert = "%verifies" },
     .{ .action = .query_blocks, .name = "blocks", .description = "insert %blocks edge filter", .query_insert = "%blocks" },
     .{ .action = .query_outgoing, .name = "outgoing", .description = "append > and inspect Hom(A,-)", .query_insert = ">" },
@@ -105,6 +107,7 @@ pub fn actionLabel(a: Action) []const u8 {
         .quick_wisp => "@wisp",
         .quick_reader => "@reader",
         .quick_codegen => "@codegen",
+        .quick_functions => "@functions",
         .query_verifies => "%verifies",
         .query_blocks => "%blocks",
         .query_outgoing => "append >",
@@ -127,6 +130,7 @@ pub fn defaultQueryForObject(obj: model.Object) []const u8 {
         .concept => ":Concept",
         .script => ":Script",
         .test_kind => ":Test",
+        .function_kind => ":Function",
         else => "",
     };
 }

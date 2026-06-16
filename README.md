@@ -1,58 +1,179 @@
-# 󰄛 Catface
+<div align="center">
 
-Catface is the fast terminal cockpit for the MonadC context category.
+<img src="./catface.svg" alt="Catface logo" width="180"/>
 
-It is not a generic curses browser. It is a project-specific interface for answering questions like:
+# Catface
 
-- What TODOs are open right now?
-- Which tests verify this compiler behavior?
-- Which notes are observations, decisions, or inferences?
-- What source files, scripts, records, and tests are connected to this object?
-- What does `reader <- @tests` or `%verifies @tests -> codegen` reveal?
+### A fast category-theory terminal cockpit for the MonadC context garden
 
-Catface is optimized for live compiler work: type naturally, narrow aggressively, follow category arrows, and keep every object grounded in the context/source tree.
+*Search TODOs. Read notes. Follow proofs. Jump through compiler evidence without leaving the terminal.*
 
-## Current version
+</div>
 
-**v0.7.1 — Indexed Focus**
+> **Purpose:** Catface is not a generic curses-style file browser. It is a purpose-built interface for the `context/` category: objects are tests, notes, records, source files, reports, TODOs, and concepts; arrows are evidence links such as `verifies`, `supports`, `blocks`, `refines`, and `id-link`.
 
-This version focuses on making Catface feel like a serious terminal instrument:
+---
 
-1. **Viewport-correct navigation**: the left result stream now uses the actual terminal size instead of a fixed row count, so the selected candidate stays visible above the footer on small and large terminals.
-2. **Right-pane focus mode**: when the relation pane is active, printable keys no longer edit the prompt. Use `n`/`p`, `j`/`k`, arrows, `C-n`/`C-p`, PageUp/PageDown, and `RET` to move through and open relation-tree rows. `Tab` returns to search input.
-3. **Faster indexed search**: exact index hits now return without scanning approximate terms, and `=term` asks for exact-token search when you do not want fuzzy expansion.
-4. **Cheaper terminal flushing**: dirty cells are flushed as contiguous changed runs instead of one cursor jump per changed cell.
-5. **Performance coverage**: `zig build test` includes minimal synthetic performance smoke tests for the index, cache, tree cursor, and query catalogue.
+## 1. Repository Map
 
-## Build
+```text
+catface/
+├── build.zig             — build, run, test, perf, and report steps
+├── build.zig.zon         — Zig package metadata
+├── catface.svg           — GitHub-rendered logo used by this README
+├── README.md             — this manual
+├── examples/             — query catalogues to paste into the TUI or CLI
+│   ├── queries.catq      │   daily query cookbook
+│   ├── catalogue.catq    │   broad language/category examples
+│   ├── symbols.catq      │   symbol/algebra examples
+│   ├── cache.catq        │   cache and indexed-search probes
+│   └── perf.catq         │   performance probe queries
+└── src/
+    ├── main.zig          — CLI entry point and report commands
+    ├── app.zig           — TUI event loop and input routing
+    ├── ui.zig            — mutable UI state, query cache, focus stack
+    ├── render.zig        — terminal layout, object cards, relation tree
+    ├── terminal.zig      — raw terminal, SGR mouse, dirty-cell renderer
+    ├── model.zig         — category object/edge model
+    ├── org.zig           — context loader
+    ├── index.zig         — inverted text index + adjacency caches
+    ├── query.zig         — query language evaluator
+    ├── tree.zig          — collapsible relation-tree state
+    ├── perf.zig          — monotonic timing helpers
+    ├── perf_report.zig   — structured JSONL reports
+    ├── file_cache.zig    — ignored-dir-aware file discovery cache
+    ├── context_cache.zig — persistent serialized context snapshot cache
+    ├── glyphs.zig        — object/edge/category symbols
+    ├── palette.zig       — terminal color theme
+    ├── manual.zig        — in-app help/manual text
+    └── tests.zig         — module test harness
+```
+
+---
+
+## 2. Philosophy
+
+Catface is a terminal interface for a compiler memory system. The core workflow is:
+
+1. **Ask a narrow question** with a compact query.
+2. **Read the selected object** in the right pane.
+3. **Follow arrows** in the bottom relation tree.
+4. **Use tests and observations as evidence** before editing compiler code.
+
+The interface is intentionally category-shaped:
+
+```text
+object ──arrow──▶ object
+Test   ─verifies▶ Source
+OBS    ─supports▶ Decision
+TODO   ─blocks──▶ Feature
+Note   ─id-link─▶ Record
+```
+
+The left pane gives you a ranked object stream. The right pane gives you object meaning plus its local Hom-neighborhood.
+
+---
+
+## 3. Version
+
+**v0.7.6 — Function Cache**
+
+This version focuses on first-class function/type search, faster index construction, persistent cache correctness, and richer right-pane navigation:
+
+- First-class `Function` objects are extracted from Monad/Wisp/Lisp source definitions and searchable by name or type signature.
+- Plain type-arrow searches such as `a -> a` and `Int -> Int` find functions; relation arrows like `@tests -> reader` still search category morphisms.
+- Context snapshots are serialized under `~/.config/catface/cache/` by default.
+- Cache invalidation uses the discovered text-artifact manifest: relative path, size, and mtime.
+- `zig build cache-report` prints structured JSONL for cache hits/misses and scan time.
+- `@info` now covers `context/info/*.org` pages with their stable Org `:ID:` values, such as `monadc.info.advanced-types`.
+- Info-page previews are cleaned: no `#+` directives, property drawers, link-only rows, or source blocks in the right card.
+- Broad lanes such as `@hot`, `@notes`, `@info`, `@tests`, `@roots`, `@leaves`, and `@orphans` are indexed lane buckets instead of repeated full scans.
+- Relation queries use set-only evaluation for the left/right sides, avoiding expensive ranking work before walking arrows.
+- Top-N ranking avoids sorting thousands of candidates when the UI only needs the first page.
+- Index construction reuses token scratch buffers instead of allocating per token; this should reduce startup/index-build cost noticeably.
+
+---
+
+## 4. Build and Run
+
+From `context/category/catface`:
 
 ```sh
 zig build
-```
-
-## Run
-
-From `context/category/catface`, pass the compiler repository root when you want universal search:
-
-```sh
 zig build run -- ../../../
 ```
 
-Passing `../../` also works when you only want the `context/` subtree.
+Passing `../../../` points Catface at the compiler repository root, so it can search `context/`, tests, source, scripts, and docs. Passing `../../` limits it mostly to the `context/` subtree.
 
-Run tests:
+Run deterministic tests:
 
 ```sh
 zig build test
 ```
 
-Run the context integrity check:
+`zig build test` is intentionally quiet on success. Use the report steps when you want structured output to paste into a discussion.
+
+---
+
+## 5. Structured Reports
+
+### Performance report
 
 ```sh
-zig build check-context
+zig build perf
+# equivalent after install/build:
+zig build run -- --perf ../../../
 ```
 
-## CLI commands
+This prints JSONL records like:
+
+```jsonl
+{"catface_perf":"context","objects":3590,"edges":4421}
+{"catface_perf":"index_build","objects":3590,"edges":4421,"terms":12000,"ns":1234567}
+{"catface_perf":"query","name":"todo_lane","query":"@todo","rounds":32,"matches":44,"total_ns":222222,"avg_ns":6944}
+```
+
+
+### Persistent cache report
+
+```sh
+zig build cache-report
+# or
+zig build run -- --cache-report ../../../
+```
+
+This prints JSONL records for the file-manifest scan and snapshot load:
+
+```jsonl
+{"catface_cache":"manifest","files":812,"dirs_scanned":41,"dirs_skipped":7,"signature":"...","scan_ns":123456,"path":"/home/me/.config/catface/cache/context-....tsv"}
+{"catface_cache":"load","hit":true,"objects":5748,"edges":4238,"ns":9876543}
+```
+
+The first run for a changed tree is expected to be a miss and will save the snapshot. The next run should be a hit. The cache is intentionally outside the repository so normal source trees stay clean; set `CATFACE_CACHE_DIR` to override it.
+
+### Query correctness/performance report
+
+```sh
+zig build query-report
+# or
+zig build run -- --query-report ../../../
+```
+
+This evaluates the built-in query catalogue and prints one JSONL record per query. It is useful when a search lane feels slow or wrong.
+
+### Test-style report
+
+```sh
+zig build test-report
+# or
+zig build run -- --test-report ../../../
+```
+
+This prints structured `catface_test` records for query-language invariants, relation syntax, exact-token search, and performance smoke checks. Normal `zig build test` remains the source of pass/fail truth; this command exists so you can paste evidence back for tuning.
+
+---
+
+## 6. CLI Reference
 
 ```sh
 catface [project-or-context-root]
@@ -61,6 +182,10 @@ catface --query <expr> [project-or-context-root]
 catface --card <object-id> [project-or-context-root]
 catface --check [project-or-context-root]
 catface --dump-objects [project-or-context-root]
+catface --perf [project-or-context-root]
+catface --query-report [project-or-context-root]
+catface --test-report [project-or-context-root]
+catface --cache-report [project-or-context-root]
 catface --help
 ```
 
@@ -70,73 +195,154 @@ Useful examples:
 catface --query '@todo' ../../../
 catface --query '@bugs' ../../../
 catface --query '@notes reader' ../../../
+catface --query '@functions' ../../../
+catface --query 'a -> a' ../../../
+catface --query '=reader' ../../../
+catface --query 'title:reader path:src' ../../../
 catface --query '@tests -> reader' ../../../
 catface --query 'reader <- @tests' ../../../
 catface --query '%verifies @tests -> codegen' ../../../
-catface --query '@todo -> @source' ../../../
 catface --card 'monadc.context.category.index.purpose' ../../../
+catface --perf ../../../
+catface --query-report ../../../
+catface --cache-report ../../../
 ```
 
-## Interface model
+---
+
+## 7. Interface Model
 
 Catface is a two-pane terminal cockpit.
 
 ### Top rail
 
-The top rail contains:
+The top rail shows:
 
-- the `󰄛 Catface` logo,
-- corpus statistics,
-- a live query line,
-- quick lane hints,
-- object/category counts.
-
-Typing is search while the left pane is active. When the right pane is active, printable keys control the relation-tree cursor instead of mutating the prompt. Normal words fuzzy-search object ids, titles, paths, tags, and previews.
+- Catface name and version,
+- corpus size,
+- live query line,
+- quick search lanes,
+- footer telemetry for frame/query/flush time.
 
 ### Left pane: ranked object stream
 
-The left pane shows ranked objects. Each row is a compact card:
+The left pane is compact and symbolic. It intentionally uses short category marks instead of wide colored bubbles because this pane is for fast scanning.
 
-- kind badge,
-- title,
-- source path and line,
-- object id,
-- preview text.
-
-Use arrows, `C-n`/`C-p`, PageUp/PageDown, or the mouse wheel to move through results.
-
-### Right pane: object text + relation tree
-
-The right pane is split conceptually into two parts.
-
-The **top** shows the selected object as text: what it does, why it matters, source path, preview, and kind-specific interpretation.
-
-The **bottom** is the relation tree. It is anchored at the bottom of the pane and shows the selected object’s neighborhood:
+Example row shape:
 
 ```text
-RELATION TREE
-▾ OUT  Hom(object, -)  12 arrows
-  ▾ [VERIFY] verifies  4
-  │  ├─ [TEST] ✓ T  reader layout gap regression
-  │  ├─ [OBS]  ✓ ▣  [OBS] reader accepts layout method forms
-  ▸ [SUPPORT] supports  6
-▾ IN   Hom(-, object)  8 arrows
-  ▾ [LINK] id-link  3
-  │  ├─ [NOTE] ⇢ I  reader notes
+▌ T TEST  reader layout gap regression
+   tests/reader-layout.mon:42  tests.reader.layout-gap
+   verifies reader layout method gap behavior
 ```
 
-Interaction:
+Use:
 
-- click `OUT` or `IN` headings to collapse/expand a direction,
-- click edge-kind headings like `[VERIFY]` or `[LINK]` to collapse/expand that group,
-- click object rows to select that connected object,
-- scroll the wheel over the right pane to scroll the relation tree,
-- with the right pane active, use `n`/`p` or `C-n`/`C-p` to move the tree cursor and `RET` to open the highlighted heading or object row.
-- with the left pane active, press `Enter` to pin the selected object as `?id`.
+- `C-n` / `C-p` globally to move results,
+- arrows or `PageUp` / `PageDown`,
+- mouse wheel over the left pane,
+- `Enter` to pin the selected object as `?id`.
 
-## Query language
+`C-n` and `C-p` keep moving the left pane even when the right pane is focused.
 
-Catface’s query language is deliberately compact. It is designed for compiler/category navigation, not SQL.
+### Right pane: selected object + relation tree
+
+The right pane has two conceptual regions:
+
+1. **Top object card** — rounded colored tag, kind, title, id, source path, trust signals, and clean text.
+2. **Bottom relation tree** — collapsible Hom-tree of incoming/outgoing arrows.
+
+Right-pane keys:
+
+```text
+Tab      switch panes
+n / j    move down in relation tree
+p / k    move up in relation tree
+RET / l  open selected heading/object row
+h        jump back to the previous relation target
+```
+
+Mouse:
+
+- click `▸` / `▾` direction headings to collapse or expand,
+- click edge-kind headings to collapse or expand edge groups,
+- click object rows to select relation targets,
+- wheel scrolls the active pane.
+
+---
+
+## 8. Symbol Algebra
+
+Catface uses compact terminal symbols so category rows fit inside a narrow pane. The symbols are not decoration; they encode the object or arrow kind.
+
+### Object symbols
+
+| Symbol | Object kind | Meaning |
+|---|---|---|
+| `T` | Test | A compiler/test-suite contract. Usually expected to verify source behavior. |
+| `S` | Source | Compiler source, scripts, or implementation surface. |
+| `λ` | Function | Parsed function/type object from Monad/Wisp/Lisp source. |
+| `▣` | Record | Context fact/claim such as OBS, DEC, INF, or FIX. |
+| `I` | Info / Note | Documentation or explanatory note. |
+| `!` | TODO | Open work item. |
+| `✓` | Done | Completed work/evidence. |
+| `◯` | Concept | Abstract category/language concept. |
+| `◇` | File | File-level object. |
+| `▤` | Report | Generated report or audit artifact. |
+| `⌁` | Script | Script/tooling surface. |
+| `◆` | Heading | Org/Markdown heading object. |
+| `·` | Unknown | Object exists but has weak type information. |
+
+### Edge symbols
+
+| Symbol | Edge kind | Category reading |
+|---|---|---|
+| `✓` | verifies | `test ✓ source`: test verifies behavior of the target object. |
+| `⊢` | supports | `record ⊢ decision`: source object supports the target. |
+| `⊣` | blocks | `todo ⊣ feature`: source object blocks target work. |
+| `≤` | refines | source object is a refinement/specialization of target. |
+| `⇢` | id-link | explicit identity/cross-reference link. |
+| `⊃` | contains | file/heading contains another object. |
+| `↦` | file-link | textual link to a file object. |
+| `≻` | supersedes | newer object replaces older object. |
+| `∈` | classifies-as | object belongs to a class/concept. |
+| `ƒ` | forgets-to | missing/forgotten relation or documentation obligation. |
+| `↺` | generated-by | generated artifact points back to generator. |
+| `∋` | mentions | loose textual mention. |
+| `→` | unknown | edge is present but not typed strongly. |
+
+### Relation tree equations
+
+```text
+OUT  Hom(object, -)  = all arrows leaving the selected object
+IN   Hom(-, object)  = all arrows entering the selected object
+```
+
+Examples:
+
+```text
+@tests -> reader
+```
+
+means: “Find objects reachable by arrows from test-like objects to reader-like objects.”
+
+```text
+reader <- @tests
+```
+
+means: “Find reader-like objects that have incoming arrows from test-like objects.”
+
+```text
+%verifies @tests -> codegen
+```
+
+means: “Restrict the relation search to `verifies` arrows from test objects into codegen objects.”
+
+---
+
+## 9. Query Language
+
+Catface’s query language is deliberately small and fast.
 
 ### Words
 
@@ -146,7 +352,17 @@ wisp define
 path literal
 ```
 
-Words fuzzy-search ids, titles, paths, tags, and preview text.
+Words search object id, title, path, tags, kind, and preview text. Exact hits use the index first; approximate expansion is only used when necessary.
+
+### Exact token search
+
+```text
+=reader
+=TODO
+=needlefast
+```
+
+`=term` means “only exact normalized token hits.” Use it for precise probes and performance checks.
 
 ### Kind filters
 
@@ -160,8 +376,6 @@ Words fuzzy-search ids, titles, paths, tags, and preview text.
 :Info
 ```
 
-Kind filters restrict the object stream to one object type.
-
 ### Namespace lanes
 
 ```text
@@ -170,6 +384,7 @@ Kind filters restrict the object stream to one object type.
 @notes
 @tests
 @info
+@functions
 @source
 @reader
 @wisp
@@ -179,6 +394,7 @@ Kind filters restrict the object stream to one object type.
 @hot
 @triage
 @blocked
+@blockers
 @roots
 @leaves
 @orphans
@@ -187,9 +403,7 @@ Kind filters restrict the object stream to one object type.
 @inf
 ```
 
-These are high-value surfaces for daily work.
-
-Use these constantly:
+Useful daily queries:
 
 ```text
 @todo reader
@@ -198,22 +412,16 @@ Use these constantly:
 @obs path literal
 @dec syntax
 @inf type inference
+@blocked
+@hot
+@info advanced-types
+@functions id
+a -> a
+Int -> Int
+=monadc.info.advanced-types
 ```
-
-### Identity filters
-
-```text
-?object-id
-#object-id
-```
-
-Use these when you know the exact object id.
-
-`Enter` on a selected result also pins that object as `?id`.
 
 ### Field filters
-
-Use these when you know exactly where a term should match. They are intentionally simple and fast.
 
 ```text
 title:reader
@@ -223,7 +431,7 @@ preview:TODO
 tag:tests
 ```
 
-Field filters combine with normal lanes:
+Combine field filters with lanes:
 
 ```text
 @todo title:reader
@@ -231,19 +439,7 @@ Field filters combine with normal lanes:
 @notes preview:OBS
 ```
 
-### Exact token search
-
-Use `=term` when you want indexed token hits without fuzzy/approximate expansion:
-
-```text
-=reader
-=TODO
-=needlefast
-```
-
-This is useful for performance probes and for reducing noise when a short word would otherwise fuzzy-match too broadly.
-
-### Edge-kind filters
+### Edge filters
 
 ```text
 %verifies
@@ -252,246 +448,162 @@ This is useful for performance probes and for reducing noise when a short word w
 %refines
 %mentions
 %generated-by
-%id-link
-%file-link
 ```
 
-Edge filters ask Catface to privilege or restrict by morphism kind.
-
-Examples:
-
-```text
-%verifies @tests
-%blocks @todo
-%supports @notes reader
-```
-
-### Category relation syntax
+### Category relation search
 
 ```text
 lhs -> rhs
 lhs <- rhs
 ```
 
-`lhs -> rhs` asks for morphisms from the left object set to the right object set.
-
-`lhs <- rhs` asks the reverse question.
-
-Examples:
+Both sides are normal subqueries when they look like object expressions (`@tests -> reader`). When the expression looks like a type signature (`a -> a`, `Int -> Int`, `List a -> a`), Catface treats it as function type search instead of relation search. This makes relation search compositional:
 
 ```text
 @tests -> reader
 reader <- @tests
 %verifies @tests -> codegen
 @todo -> @source
-@obs -> @tests
-@notes -> @todo
+@obs -> @dec
+@blocked <- @todo
 ```
-
-This is the query syntax that matches the category-theory model most directly: objects are searched as sets, arrows connect them, and edge kinds refine the Hom view.
 
 ### Graph operators
 
 ```text
->
-<
-~
-proj
+>       outgoing expansion
+<       incoming expansion
+~       one-step neighborhood
+proj    concept/taxonomy projection
 ```
 
-Meaning:
+---
 
-- `>` expands through outgoing arrows: `Hom(object, -)`.
-- `<` expands through incoming arrows: `Hom(-, object)`.
-- `~` expands the neighborhood in both directions.
-- `proj` projects toward concepts/taxonomy objects.
 
-Examples:
+## 10. Info Pages
+
+The `context/info/*.org` pages are first-class `Info` objects. A page like:
+
+```org
+#+TITLE: Advanced Types
+#+FILETAGS: :monad:language:advanced-types:info:
+:PROPERTIES:
+:ID:       monadc.info.advanced-types
+:END:
+```
+
+becomes searchable by title, path, tags, and stable id:
 
 ```text
-reader >
-reader <
-reader ~
-wisp define proj
+@info
+@info advanced-types
+@info type-inference
+=monadc.info.advanced-types
+path:context/info
 ```
 
-## Keyboard reference
+The right pane renders the page as clean explanation text. Catface deliberately strips Org machine directives such as `#+TITLE`, property drawers, link-only navigation rows, and source blocks from the visible summary, while still indexing the meaningful prose.
 
-| Key | Action |
+## 11. Examples Directory
+
+The `examples/` directory is a query catalogue, not test fixture noise. Open these files and paste lines into Catface, or run similar expressions through `--query`.
+
+| File | Use |
 |---|---|
-| Type | edit the live query |
-| `?` | open help when query is empty |
-| `Esc` | close help, then quit |
-| `C-c` | quit |
-| `↑` / `↓` | move result selection |
-| `C-p` / `C-n` | move result selection |
-| PageUp / PageDown | scroll result stream |
-| `Enter` | focus selected object as `?id` |
-| `Tab` | switch pane emphasis; typing still edits search |
-| `C-a` / `C-e` | query start/end |
-| `C-d` | delete forward |
-| Backspace / `C-h` | delete backward |
-| `C-k` | kill to end |
-| `M-d` | kill word |
-| `C-y` | yank kill ring |
-| `C-l` / `C-u` | clear query |
-| `Alt-b` | history back |
+| `examples/queries.catq` | Main cookbook for day-to-day exploration. |
+| `examples/catalogue.catq` | Broader coverage of lanes, fields, relations, and graph ops. |
+| `examples/symbols.catq` | Queries that make the object/edge symbols meaningful. |
+| `examples/cache.catq` | Queries intended to exercise cached/indexed paths. |
+| `examples/perf.catq` | Performance probes for `--perf` and manual timing. |
+| `examples/functions.catq` | Function-name and type-signature queries. |
 
-Quick lanes:
-
-| Key | Query |
-|---|---|
-| `Alt-t` | `@todo` |
-| `Alt-n` | `@notes` |
-| `Alt-e` | `@tests` |
-| `Alt-s` | `@source` |
-| `Alt-i` | `@info` |
-| `Alt-u` | `@bugs` |
-| `Alt-w` | `@wisp` |
-| `Alt-m` | `@reader` |
-| `Alt-c` | `@codegen` |
-| `Alt-r` | `:Record` |
-| `Alt-v` | append `%verifies` |
-| `Alt-x` | append `%blocks` |
-| `Alt-o` | append `>` |
-| `Alt-<` | append `<` |
-| `Alt-g` | append `~` |
-| `Alt-p` | append `proj` |
-
-Mouse:
-
-| Action | Behavior |
-|---|---|
-| click result row | select object |
-| click right pane object row | select connected object |
-| click relation heading | collapse/expand branch |
-| mouse wheel over left pane | scroll results |
-| mouse wheel over right pane | scroll relation tree |
-| mouse release / drag | safely ignored unless mapped later |
-
-## Performance model
-
-Catface is designed to stay responsive on a large context corpus.
-
-Implemented optimizations:
-
-- one startup `SearchIndex` containing normalized text postings, kind buckets, edge-kind buckets, incoming adjacency, outgoing adjacency, and in/out degree arrays,
-- indexed query path for normal words, `:Kind`, `%edge-kind`, `>`, `<`, `~`, `proj`, and relation queries with edge-kind hints,
-- reference evaluator kept as a fallback and test oracle for quality,
-- event-driven render loop: no full redraw every tick,
-- query-result cache: queries run only when the query buffer changes,
-- dirty screen flag: key/mouse/resize/cursor blink mark the UI dirty,
-- dirty-cell terminal backend: `set()` tracks changed cells and `flush()` scans only dirty bounds,
-- no unconditional full-screen clear in the normal draw path,
-- SGR mouse handling: release/scroll sequences no longer fall through to quit,
-- footer telemetry: frame/query/flush times are always visible in nanoseconds.
-
-The footer shows:
-
-```text
-frame 430000ns  query 80000ns  flush 120000ns  redraws 42  cached 91
-```
-
-Use this while optimizing. A sluggish interaction should be visible as either query time, flush time, or frame time.
-
-## Examples directory
-
-The `examples/` directory contains query cookbooks you can paste directly into Catface or pass to `--query`.
-
-Current files:
-
-```text
-examples/queries.catq      compact everyday cookbook used by tests
-examples/catalogue.catq    larger feature catalogue for manual exploration
-examples/perf.catq         performance probe list for timing/search regressions
-```
-
-They are organized by task:
-
-- daily TODO/bug triage,
-- notes and trust-level searches,
-- tests and coverage queries,
-- category relation queries,
-- source-specific surfaces,
-- field-specific indexed search,
-- graph/projection operators,
-- shape diagnostics such as roots/leaves/orphans,
-- performance probes.
-
-Try examples manually:
+Try:
 
 ```sh
-for f in examples/queries.catq examples/catalogue.catq examples/perf.catq; do
-  echo "### $f"
-  while IFS= read -r q; do
-    case "$q" in ''|'#'*) continue ;; esac
-    echo "--- $q"
-    zig build run -- --query "$q" ../../../ | head -20
-  done < "$f"
-done
-```
-
-## Design principles
-
-1. **Typing must feel normal.** Search is the main action; printable keys should not be stolen by navigation commands.
-2. **Every object must be grounded.** A result should always expose id, path, line, preview, and relation context.
-3. **Category operations must be visible.** `->`, `<-`, `%edge-kind`, `>`, `<`, `~`, and `proj` are first-class UI language, not hidden implementation details.
-4. **The right pane should explain, not just list.** The top describes the object; the bottom shows its Hom neighborhood.
-5. **Performance must be observable.** The footer timings make slowness a testable property.
-6. **Mouse input must never be fatal.** Unknown escape sequences are ignored; SGR mouse release and scroll are handled safely.
-
-## Development workflow
-
-Before shipping a Catface change:
-
-```sh
-zig build test
-zig build run -- --query '@todo' ../../../
+sed -n '1,120p' examples/queries.catq
+zig build run -- --query '@hot' ../../../
+zig build run -- --query '@functions' ../../../
+zig build run -- --query 'a -> a' ../../../
 zig build run -- --query '@tests -> reader' ../../../
 zig build run -- --query '%verifies @tests -> codegen' ../../../
-zig build run -- ../../../
 ```
 
-Manual UI checks:
+---
 
-- type ordinary words like `reader`, `wisp`, `codegen`, `todo`, `q`, `j`, `k`, `n`, `p` and confirm they enter the query,
-- click a result row,
-- click a relation tree heading and confirm it collapses,
-- click a relation tree object row and confirm selection changes,
-- scroll the wheel in both panes,
-- open `?` help and close it with `Esc`,
-- watch footer timings while searching.
+## 12. Performance Model
 
-## Project shape
+Catface tries to respect the CPU:
 
-Important files:
+- context files are discovered with an ignored-directory cache,
+- parsed context snapshots are persisted in `~/.config/catface/cache/`,
+- `.git`, `.zig-cache`, `node_modules`, `__pycache__`, `build`, and `dist` are skipped,
+- a startup search index stores normalized text postings,
+- object-kind buckets are precomputed,
+- edge-kind buckets are precomputed,
+- incoming/outgoing adjacency maps are precomputed,
+- per-object/per-edge-kind degree counters are precomputed,
+- query results are cached in UI state,
+- the terminal is redrawn only when state changes,
+- flush writes dirty cells/runs instead of clearing the whole screen.
+
+The footer shows live telemetry:
 
 ```text
-src/app.zig              event loop, key/mouse dispatch, dirty redraw policy
-src/terminal.zig         raw terminal, SGR mouse parser, dirty-cell flush
-src/render.zig           full UI rendering, object cards, relation tree, footer timings
-src/query.zig            indexed/reference fuzzy/category query language
-src/index.zig            startup search index: text postings, buckets, adjacency
-src/tree.zig             collapsible relation tree state and actions
-src/perf.zig             timing helpers and performance counters
-src/model.zig            context objects and morphisms
-src/org.zig              context loader
-src/tests.zig            test harness importing all modules
-examples/queries.catq    compact query cookbook
-examples/catalogue.catq  full feature catalogue
-examples/perf.catq       performance probe catalogue
+frame 120000ns  query 8000ns  flush 42000ns  redraws 128  cached 77
 ```
 
+For reproducible output, use:
 
-## Performance tests
-
-`zig build test` includes deterministic performance smoke tests. They do not rely on fragile wall-clock budgets for pass/fail; instead they assert that indexed candidate sets stay selective and print timing/candidate lines you can paste back into review.
-
-Look for output like:
-
-```text
-catface perf: indexed candidates for needlefast = 5/320
-catface perf: 64 indexed needlefast queries over 500 objects took <ns>ns
+```sh
+zig build perf
+zig build query-report
+zig build test-report
+zig build cache-report
 ```
 
-Those tests are intentionally small. Their job is to catch architectural regressions such as accidentally returning to full-corpus scans for common word queries.
+---
+
+## 13. Recommended Workflow
+
+1. Start broad:
+
+   ```text
+   @hot
+   @todo
+   @bugs
+   ```
+
+2. Narrow by subsystem:
+
+   ```text
+   @todo reader
+   @bugs wisp
+   @tests codegen
+   ```
+
+3. Ask category questions:
+
+   ```text
+   @tests -> reader
+   reader <- @tests
+   %verifies @tests -> codegen
+   ```
+
+4. Press `Tab` and use the relation tree to follow evidence.
+5. Use `h` when you jumped too far.
+6. Use `zig build query-report` or `zig build perf` when performance or ranking feels off.
+
+---
+
+## 14. Notes for Future Work
+
+Good next improvements:
+
+- persist the full search index snapshot, not only the parsed context snapshot,
+- add command history search,
+- add dedicated object preview scrolling,
+- add per-query allocation counters,
+- add a report diff command to compare two performance runs,
+- add a generated symbol legend inside `--help` and `?` output for very narrow terminals.
+
+Catface should stay small, fast, and category-specific. When in doubt, prefer better evidence navigation over generic file-browser features.

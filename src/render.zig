@@ -162,13 +162,15 @@ pub fn drawResults(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context
         t.fill(.{ .x = inner.x, .y = y, .w = inner.w, .h = row_h }, ' ', .{ .fg = theme.ink, .bg = bg });
         t.set(inner.x, y, if (is_sel) '▌' else ' ', .{ .fg = bar, .bg = bg, .bold = is_sel });
 
-        var badge_buf: [32]u8 = undefined;
-        const badge = std.fmt.bufPrint(&badge_buf, "{s} {s}", .{ glyphs.kind(obj.kind), model.Context.kindName(obj.kind) }) catch "?";
-        t.textClipped(inner.x + 2, y, @min(@as(u16, 14), if (inner.w > 4) inner.w - 4 else 0), badge, .{ .fg = theme.kindColor(obj.kind), .bg = bg, .bold = true });
-        const title_x = inner.x + 17;
+        var head_buf: [128]u8 = undefined;
+        const head = std.fmt.bufPrint(&head_buf, "{s} {s}", .{ glyphs.kind(obj.kind), objectBadge(obj) }) catch objectBadge(obj);
+        const head_color = objectBadgeColor(obj, theme);
+        const head_w: u16 = @intCast(@min(@as(usize, 10), head.len));
+        t.textClipped(inner.x + 3, y, head_w, head, .{ .fg = head_color, .bg = bg, .bold = true });
+        const title_x = inner.x + 3 + head_w + 2;
         if (title_x < inner.right()) {
             const title_text = if (obj.title.len != 0) obj.title else obj.id;
-            t.textClipped(title_x, y, inner.right() - title_x - 1, title_text, highlightStyle(obj, theme, bg, is_sel and active));
+            t.textClipped(title_x, y, inner.right() - title_x - 1, title_text, .{ .fg = if (is_sel) theme.ink else theme.mute, .bg = bg, .bold = is_sel and active });
         }
 
         var meta_buf: [768]u8 = undefined;
@@ -176,10 +178,61 @@ pub fn drawResults(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context
         if (y + 1 < inner.bottom()) t.textClipped(inner.x + 3, y + 1, if (inner.w > 5) inner.w - 5 else 0, meta, .{ .fg = theme.mute, .bg = bg });
         if (y + 2 < inner.bottom()) {
             const preview = if (obj.preview.len != 0) obj.preview else objectOneLineMeaning(obj);
-            t.textClipped(inner.x + 3, y + 2, if (inner.w > 5) inner.w - 5 else 0, preview, .{ .fg = theme.ink.scale(78, 100), .bg = bg, .dim = !is_sel });
+            t.textClipped(inner.x + 3, y + 2, if (inner.w > 5) inner.w - 5 else 0, preview, .{ .fg = if (is_sel) theme.ink.scale(80, 100) else theme.mute.scale(82, 100), .bg = bg, .dim = !is_sel });
         }
         y += @as(u16, @intCast(ResultRowHeight));
     }
+}
+
+
+fn drawKindBubble(t: *terminal.Tty, x: u16, y: u16, obj: model.Object, bg: palette.Color, theme: palette.Theme) u16 {
+    const label = objectBadge(obj);
+    const color = objectBadgeColor(obj, theme);
+    t.text(x, y, "", .{ .fg = color, .bg = bg, .bold = true });
+    const label_w: u16 = @intCast(@min(label.len, 16));
+    t.textClipped(x + 1, y, label_w, label, .{ .fg = theme.bg, .bg = color, .bold = true });
+    t.text(x + 1 + label_w, y, "", .{ .fg = color, .bg = bg, .bold = true });
+    return x + label_w + 2;
+}
+
+fn objectBadge(obj: model.Object) []const u8 {
+    if (obj.kind == .record) return shortRecordClass(obj);
+    return switch (obj.kind) {
+        .test_kind => "TEST",
+        .todo => "TODO",
+        .done => "DONE",
+        .source => "SRC",
+        .function_kind => "FN",
+        .script => "SCRIPT",
+        .info, .heading => "NOTE",
+        .concept => "CONCEPT",
+        .file => "FILE",
+        .report => "REPORT",
+        .record => "REC",
+        .unknown => "OBJ",
+    };
+}
+
+fn objectBadgeColor(obj: model.Object, theme: palette.Theme) palette.Color {
+    if (obj.kind == .record) {
+        const cls = shortRecordClass(obj);
+        if (std.mem.eql(u8, cls, "OBS")) return theme.obs;
+        if (std.mem.eql(u8, cls, "DEC")) return theme.accent;
+        if (std.mem.eql(u8, cls, "INF")) return theme.warn;
+        if (std.mem.eql(u8, cls, "FIX")) return theme.bad;
+        return theme.record;
+    }
+    if (obj.kind == .info or obj.kind == .heading) return theme.info;
+    if (obj.kind == .function_kind) return theme.function_color;
+    return theme.kindColor(obj.kind);
+}
+
+fn shortRecordClass(obj: model.Object) []const u8 {
+    if (hasToken(obj.title, "OBS") or hasToken(obj.preview, "[OBS") or hasToken(obj.preview, "OBS")) return "OBS";
+    if (hasToken(obj.title, "DEC") or hasToken(obj.preview, "[DEC") or hasToken(obj.preview, "DEC")) return "DEC";
+    if (hasToken(obj.title, "INF") or hasToken(obj.preview, "[INF") or hasToken(obj.preview, "INF")) return "INF";
+    if (hasToken(obj.title, "FIX") or hasToken(obj.preview, "FIX")) return "FIX";
+    return "REC";
 }
 
 fn drawEmptyResults(t: *terminal.Tty, r: terminal.Rect, theme: palette.Theme) void {
@@ -188,14 +241,14 @@ fn drawEmptyResults(t: *terminal.Tty, r: terminal.Rect, theme: palette.Theme) vo
 }
 
 pub fn drawDetail(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context, idx_opt: ?usize, tree_state: *const tree.State, active: bool, theme: palette.Theme) void {
-    drawDetailWithIndex(t, r, ctx, null, idx_opt, tree_state, active, theme);
+    drawDetailWithIndex(t, r, ctx, null, idx_opt, tree_state, &.{}, active, theme);
 }
 
-pub fn drawDetailIndexed(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context, idx: *const search_index.SearchIndex, idx_opt: ?usize, tree_state: *const tree.State, active: bool, theme: palette.Theme) void {
-    drawDetailWithIndex(t, r, ctx, idx, idx_opt, tree_state, active, theme);
+pub fn drawDetailIndexed(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context, idx: *const search_index.SearchIndex, idx_opt: ?usize, tree_state: *const tree.State, focus_stack: []const usize, active: bool, theme: palette.Theme) void {
+    drawDetailWithIndex(t, r, ctx, idx, idx_opt, tree_state, focus_stack, active, theme);
 }
 
-fn drawDetailWithIndex(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context, sidx_opt: ?*const search_index.SearchIndex, idx_opt: ?usize, tree_state: *const tree.State, active: bool, theme: palette.Theme) void {
+fn drawDetailWithIndex(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context, sidx_opt: ?*const search_index.SearchIndex, idx_opt: ?usize, tree_state: *const tree.State, focus_stack: []const usize, active: bool, theme: palette.Theme) void {
     t.box(r, detailTitle(ctx, idx_opt, active), active, theme);
     const inner = r.inset(1);
     if (inner.h == 0 or inner.w == 0) return;
@@ -213,7 +266,7 @@ fn drawDetailWithIndex(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Con
 
     if (text_rect.h > 0) {
         var y = text_rect.y;
-        y = drawIdentity(t, text_rect, y, obj, theme);
+        y = drawIdentity(t, text_rect, y, ctx, focus_stack, idx, obj, theme);
         if (y < text_rect.bottom()) {
             y += 1;
             _ = drawObjectText(t, text_rect, y, ctx, sidx_opt, obj, theme);
@@ -291,6 +344,7 @@ fn detailTitle(ctx: *const model.Context, idx_opt: ?usize, active: bool) []const
             .done => " DONE evidence + supersession links ",
             .record => " context record + trust links ",
             .source, .script => " source surface + verifying tests ",
+            .function_kind => " function type + callers/links ",
             .concept => " concept object + categorical neighborhood ",
             .info, .heading => " note text + context links ",
             .file, .report => " artifact text + contained objects ",
@@ -300,23 +354,63 @@ fn detailTitle(ctx: *const model.Context, idx_opt: ?usize, active: bool) []const
     return " Catface cockpit ";
 }
 
-fn drawIdentity(t: *terminal.Tty, r: terminal.Rect, y0: u16, obj: model.Object, theme: palette.Theme) u16 {
+fn drawIdentity(t: *terminal.Tty, r: terminal.Rect, y0: u16, ctx: *const model.Context, focus_stack: []const usize, current_idx: usize, obj: model.Object, theme: palette.Theme) u16 {
     var y = y0;
     if (y >= r.bottom()) return y;
-    t.text(r.x, y, glyphs.kind(obj.kind), .{ .fg = theme.kindColor(obj.kind), .bg = theme.panel, .bold = true });
-    t.text(r.x + 2, y, model.Context.kindName(obj.kind), .{ .fg = theme.kindColor(obj.kind), .bg = theme.panel, .bold = true });
-    if (r.w > 52) t.textClipped(r.right() - 47, y, 46, "bottom tree: click ▸/▾ headings or rows", .{ .fg = theme.mute, .bg = theme.panel });
+    const bx = drawKindBubble(t, r.x, y, obj, theme.panel, theme);
+    if (bx + 2 < r.right()) t.textClipped(bx + 2, y, r.right() - bx - 2, model.Context.kindName(obj.kind), .{ .fg = theme.mute, .bg = theme.panel, .bold = true });
+    if (r.w > 52) t.textClipped(r.right() - 47, y, 46, "tree: n/p move · l opens · h backs", .{ .fg = theme.mute.scale(78, 100), .bg = theme.panel });
     y += 1;
 
+    y = drawFocusChain(t, r, y, ctx, focus_stack, current_idx, theme);
     const title = if (obj.title.len != 0) obj.title else obj.id;
-    t.textClipped(r.x, y, r.w, title, highlightStyle(obj, theme, theme.panel, true));
+    t.textClipped(r.x, y, r.w, title, .{ .fg = theme.ink, .bg = theme.panel, .bold = true });
     y += 1;
-    t.textClipped(r.x, y, r.w, obj.id, .{ .fg = theme.accent, .bg = theme.panel });
+    t.textClipped(r.x, y, r.w, obj.id, .{ .fg = theme.mute, .bg = theme.panel });
     y += 1;
     var meta_buf: [768]u8 = undefined;
-    const meta = std.fmt.bufPrint(&meta_buf, "@{s}:{d}  tags {s}", .{ obj.path, obj.line, if (obj.tags.len != 0) obj.tags else "∅" }) catch "";
-    t.textClipped(r.x, y, r.w, meta, .{ .fg = theme.mute, .bg = theme.panel });
+    const meta = std.fmt.bufPrint(&meta_buf, "@{s}:{d}  {s}", .{ obj.path, obj.line, objectMetaHint(obj) }) catch "";
+    t.textClipped(r.x, y, r.w, meta, .{ .fg = theme.mute.scale(82, 100), .bg = theme.panel });
     return y + 1;
+}
+
+fn drawFocusChain(t: *terminal.Tty, r: terminal.Rect, y: u16, ctx: *const model.Context, focus_stack: []const usize, current_idx: usize, theme: palette.Theme) u16 {
+    if (y >= r.bottom()) return y;
+    if (focus_stack.len == 0) return y;
+    var buf: [1024]u8 = undefined;
+    var len: usize = 0;
+    const start = if (focus_stack.len > 4) focus_stack.len - 4 else 0;
+    var i = start;
+    while (i < focus_stack.len) : (i += 1) {
+        const idx = focus_stack[i];
+        if (idx >= ctx.objects.items.len) continue;
+        const o = ctx.objects.items[idx];
+        if (i != start) appendFixed(&buf, &len, " -> ");
+        appendFixed(&buf, &len, shortObjectName(o));
+    }
+    appendFixed(&buf, &len, " -> ");
+    appendFixed(&buf, &len, shortObjectName(ctx.objects.items[current_idx]));
+    const chain = buf[0..len];
+    t.textClipped(r.x, y, r.w, chain, .{ .fg = theme.accent2, .bg = theme.panel, .bold = true });
+    return y + 1;
+}
+
+fn appendFixed(buf: []u8, len: *usize, bytes: []const u8) void {
+    if (len.* >= buf.len) return;
+    const n = @min(bytes.len, buf.len - len.*);
+    @memcpy(buf[len.* .. len.* + n], bytes[0..n]);
+    len.* += n;
+}
+
+fn shortObjectName(obj: model.Object) []const u8 {
+    if (obj.title.len != 0) return obj.title;
+    return obj.id;
+}
+
+fn objectMetaHint(obj: model.Object) []const u8 {
+    if (obj.kind == .function_kind) return obj.preview;
+    if (obj.tags.len != 0) return obj.tags;
+    return "∅";
 }
 
 fn drawObjectText(t: *terminal.Tty, r: terminal.Rect, y0: u16, ctx: *const model.Context, sidx_opt: ?*const search_index.SearchIndex, obj: model.Object, theme: palette.Theme) u16 {
@@ -326,7 +420,8 @@ fn drawObjectText(t: *terminal.Tty, r: terminal.Rect, y0: u16, ctx: *const model
     y = drawSignalRow(t, r, y, ctx, sidx_opt, obj, theme);
     y = drawKV(t, r, y, "does", objectDoes(obj), theme);
     y = drawKV(t, r, y, "why", objectWhy(obj), theme);
-    if (obj.preview.len != 0) y = drawKV(t, r, y, "text", obj.preview, theme);
+    const display_text = objectDisplayText(obj);
+    if (display_text.len != 0) y = drawKV(t, r, y, "text", display_text, theme);
     if (obj.title.len != 0 and !std.mem.eql(u8, obj.title, obj.preview)) y = drawKV(t, r, y, "title", obj.title, theme);
     if (obj.path.len != 0) y = drawKV(t, r, y, "open", obj.path, theme);
     return y;
@@ -376,6 +471,7 @@ fn objectTextTitle(obj: model.Object) []const u8 {
         .done => "DONE: COMPLETED EVIDENCE",
         .record => "RECORD: CLAIM AND TRUST LEVEL",
         .source, .script => "SOURCE: IMPLEMENTATION SURFACE",
+        .function_kind => "FUNCTION: TYPE AND DEFINITION",
         .concept => "CONCEPT: CATEGORY OBJECT",
         .info, .heading => "NOTE: CONTEXT TEXT",
         .file, .report => "ARTIFACT: FILE SURFACE",
@@ -384,17 +480,41 @@ fn objectTextTitle(obj: model.Object) []const u8 {
 }
 
 fn objectDoes(obj: model.Object) []const u8 {
+    const body = objectDisplayText(obj);
     return switch (obj.kind) {
-        .test_kind => chooseFirstNonEmpty(obj.preview, "compiler regression/contract test"),
-        .todo => chooseFirstNonEmpty(obj.preview, "open work item"),
-        .done => chooseFirstNonEmpty(obj.preview, "completed invariant/evidence"),
-        .record => chooseFirstNonEmpty(obj.preview, obj.title),
-        .source, .script => chooseFirstNonEmpty(obj.preview, "source/tooling object"),
-        .concept => chooseFirstNonEmpty(obj.preview, "semantic object in the context category"),
-        .info, .heading => chooseFirstNonEmpty(obj.preview, "documentation/context note"),
-        .file, .report => chooseFirstNonEmpty(obj.preview, "file/report level artifact"),
-        .unknown => chooseFirstNonEmpty(obj.preview, obj.title),
+        .test_kind => chooseFirstNonEmpty(body, "compiler regression/contract test"),
+        .todo => chooseFirstNonEmpty(body, "open work item"),
+        .done => chooseFirstNonEmpty(body, "completed invariant/evidence"),
+        .record => chooseFirstNonEmpty(body, obj.title),
+        .source, .script => chooseFirstNonEmpty(body, "source/tooling object"),
+        .function_kind => chooseFirstNonEmpty(functionSignatureText(obj), "first-class function/type arrow"),
+        .concept => chooseFirstNonEmpty(body, "semantic object in the context category"),
+        .info, .heading => chooseFirstNonEmpty(body, "documentation/context note"),
+        .file, .report => chooseFirstNonEmpty(body, "file/report level artifact"),
+        .unknown => chooseFirstNonEmpty(body, obj.title),
     };
+}
+
+fn objectDisplayText(obj: model.Object) []const u8 {
+    if (obj.kind == .function_kind) return functionSignatureText(obj);
+    var text_slice = std.mem.trim(u8, obj.preview, " \t\r\n");
+    if (text_slice.len == 0) return "";
+    if (text_slice[0] == '[') {
+        if (std.mem.indexOfScalar(u8, text_slice, ']')) |end| {
+            text_slice = std.mem.trim(u8, text_slice[end + 1 ..], " \t-:;\r\n");
+            if (text_slice.len != 0) return text_slice;
+        }
+        return obj.title;
+    }
+    if (std.mem.startsWith(u8, text_slice, "#+") or text_slice[0] == ':') return obj.title;
+    return text_slice;
+}
+
+fn functionSignatureText(obj: model.Object) []const u8 {
+    const preview = std.mem.trim(u8, obj.preview, " \t\r\n");
+    if (preview.len != 0) return preview;
+    if (obj.title.len != 0) return obj.title;
+    return obj.id;
 }
 
 fn objectWhy(obj: model.Object) []const u8 {
@@ -404,6 +524,7 @@ fn objectWhy(obj: model.Object) []const u8 {
         .done => "Treat as useful evidence unless a supersedes/refines edge points to newer truth.",
         .record => recordTrust(recordClass(obj)),
         .source, .script => "Find tests and records connected to this source before changing behavior.",
+        .function_kind => "Search by name or type signature; connected source tells where the definition lives.",
         .concept => "Use relation queries and projection to move between concrete tests/source and this abstraction.",
         .info, .heading => "Useful project memory; trust it more when linked to tests/source/OBS records.",
         .file, .report => "Navigate contained or linked objects for precise facts.",
@@ -440,7 +561,7 @@ fn drawRelationTree(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Contex
     t.fill(r, ' ', .{ .fg = theme.ink, .bg = theme.panel });
     if (r.h == 0) return;
     var title_buf: [220]u8 = undefined;
-    const title = std.fmt.bufPrint(&title_buf, "RELATION TREE  row {d}/{d}  n/p move · RET opens · click arrows/headings", .{ tree_state.cursor + 1, tree_state.row_count }) catch "RELATION TREE";
+    const title = std.fmt.bufPrint(&title_buf, "RELATION TREE  row {d}/{d}  T test S src λ fn ▣ rec I note ! todo · ✓ verify ⊢ support ⊣ block ≤ refine ⇢ link", .{ tree_state.cursor + 1, tree_state.row_count }) catch "RELATION TREE";
     t.textClipped(r.x, r.y, r.w, title, .{ .fg = theme.accent2, .bg = theme.panel, .bold = true });
     if (r.h <= 1) return;
     const content = terminal.Rect{ .x = r.x, .y = r.y + 1, .w = r.w, .h = r.h - 1 };
@@ -472,7 +593,7 @@ fn drawGroup(t: *terminal.Tty, r: terminal.Rect, y: *u16, row: *usize, scroll: u
     var buf: [160]u8 = undefined;
     const open = tree_state.groupOpen(dir, kind);
     const chev = if (open) "▾" else "▸";
-    const line = std.fmt.bufPrint(&buf, "  {s} [{s}] {s}  {d}", .{ chev, edgeBadge(kind), model.Context.edgeName(kind), total }) catch model.Context.edgeName(kind);
+    const line = std.fmt.bufPrint(&buf, "  {s} {s} [{s}] {s}  {d}", .{ chev, glyphs.edge(kind), edgeBadge(kind), model.Context.edgeName(kind), total }) catch model.Context.edgeName(kind);
     drawLogicalRow(t, r, y, row, scroll, cursor, active, 0, line, .{ .fg = edgeColor(kind, theme), .bg = theme.panel, .bold = true }, theme);
     if (!open) return;
     var shown: usize = 0;
@@ -510,8 +631,8 @@ fn drawRelationTargetRow(t: *terminal.Tty, r: terminal.Rect, y: *u16, row: *usiz
         other_kind = o.kind;
     }
     var line_buf: [1024]u8 = undefined;
-    const target_line = std.fmt.bufPrint(&line_buf, "  │  ├─ [{s}] {s} {s}  {s}", .{ relationTargetBadge(ctx, other_id, e.kind), glyphs.edge(e.kind), glyphs.kind(other_kind), other_title }) catch other_id;
-    drawLogicalRow(t, r, y, row, scroll, cursor, active, 0, target_line, .{ .fg = edgeColor(e.kind, theme), .bg = theme.panel }, theme);
+    const target_line = std.fmt.bufPrint(&line_buf, "  │  ├─ {s} {s} {s}  {s}", .{ glyphs.edge(e.kind), glyphs.kind(other_kind), relationTargetBadge(ctx, other_id, e.kind), other_title }) catch other_id;
+    drawLogicalRow(t, r, y, row, scroll, cursor, active, 0, target_line, .{ .fg = theme.mute, .bg = theme.panel, .dim = !active }, theme);
 }
 
 fn drawLogicalRow(t: *terminal.Tty, r: terminal.Rect, y: *u16, row: *usize, scroll: usize, cursor: usize, active: bool, indent: u16, row_text: []const u8, style: palette.Style, theme: palette.Theme) void {
@@ -580,14 +701,19 @@ fn hitDirection(ctx: *const model.Context, sidx_opt: ?*const search_index.Search
 
 fn countEdges(ctx: *const model.Context, sidx_opt: ?*const search_index.SearchIndex, id: []const u8, dir: tree.Direction, kind_opt: ?model.EdgeKind) usize {
     if (sidx_opt) |idx| {
-        const edges = edgeIndicesForDir(idx, id, dir);
-        if (kind_opt == null) return edges.len;
-        var n: usize = 0;
-        const k = kind_opt.?;
-        for (edges) |edge_idx| {
-            if (ctx.edges.items[edge_idx].kind == k) n += 1;
+        if (ctx.findObject(id)) |object_index| {
+            if (kind_opt) |k| {
+                return switch (dir) {
+                    .out => idx.outgoingKindCount(object_index, k),
+                    .in => idx.incomingKindCount(object_index, k),
+                };
+            }
+            return switch (dir) {
+                .out => idx.outgoingTotal(object_index),
+                .in => idx.incomingTotal(object_index),
+            };
         }
-        return n;
+        return 0;
     }
     var n: usize = 0;
     for (ctx.edges.items) |e| {
@@ -622,9 +748,9 @@ fn drawDashboard(t: *terminal.Tty, r: terminal.Rect, ctx: *const model.Context, 
     t.text(r.x + 2, y, "Catface v" ++ version.version ++ " — category cockpit", .{ .fg = theme.accent, .bg = theme.panel, .bold = true });
     y += 2;
     const lines = [_][]const u8{
-        "Fast lanes: Alt-t TODO, Alt-n notes, Alt-e tests, Alt-s source, Alt-i info, Alt-r records",
+        "Fast lanes: Alt-t TODO, Alt-n notes, Alt-e tests, Alt-s source, Alt-i info, Alt-f functions",
         "Natural search: wisp define reader layout",
-        "Namespace search: @todo @hot @blocked @bugs @notes @obs @dec @inf @reader @wisp @codegen",
+        "Namespace search: @todo @hot @blocked @bugs @notes @functions @obs @dec @inf @reader @wisp @codegen",
         "Kind search: :Test :Record :Source :Concept :Todo",
         "Edge search: %verifies %supports %blocks %refines",
         "Category relation: lhs -> rhs, lhs <- rhs",
@@ -658,6 +784,7 @@ fn highlightStyle(obj: model.Object, theme: palette.Theme, bg: palette.Color, ac
     if (obj.kind == .todo or hasToken(obj.title, "TODO") or hasToken(obj.preview, "TODO")) return .{ .fg = theme.todo, .bg = bg, .bold = true };
     if (obj.kind == .done or hasToken(obj.title, "DONE") or hasToken(obj.preview, "DONE")) return .{ .fg = theme.done, .bg = bg, .bold = true };
     if (obj.kind == .record or hasToken(obj.title, "OBS") or hasToken(obj.title, "DEC") or hasToken(obj.title, "INF")) return .{ .fg = theme.record, .bg = bg, .bold = true };
+    if (obj.kind == .function_kind or hasToken(obj.tags, "@functions")) return .{ .fg = theme.function_color, .bg = bg, .bold = true };
     if (obj.kind == .info or hasToken(obj.tags, "@info")) return .{ .fg = theme.info, .bg = bg, .bold = active };
     return .{ .fg = theme.ink, .bg = bg, .bold = active };
 }
@@ -728,20 +855,8 @@ fn edgeBadge(k: model.EdgeKind) []const u8 {
 fn relationTargetBadge(ctx: *const model.Context, id: []const u8, edge_kind: model.EdgeKind) []const u8 {
     if (ctx.findObject(id)) |idx| {
         const obj = ctx.objects.items[idx];
-        if (obj.kind == .record) return recordClass(obj);
-        return switch (obj.kind) {
-            .test_kind => "TEST",
-            .todo => "TODO",
-            .done => "DONE",
-            .source => "SRC",
-            .script => "SCRIPT",
-            .info, .heading => "NOTE",
-            .concept => "CONCEPT",
-            .file => "FILE",
-            .report => "REPORT",
-            .record => "REC",
-            .unknown => edgeBadge(edge_kind),
-        };
+        if (obj.kind == .record) return shortRecordClass(obj);
+        return objectBadge(obj);
     }
     return edgeBadge(edge_kind);
 }
@@ -835,14 +950,15 @@ pub fn drawTutorial(t: *terminal.Tty, lay: Layout, theme: palette.Theme) void {
 
     const lines = [_][]const u8{
         "Typing is always search. Printable keys insert into the query line.",
-        "Move: ↑/↓, C-n/C-p, PageUp/PageDown.  Enter pins selected object as ?id.",
+        "Move results: ↑/↓ or C-n/C-p. Right tree: n/p/j/k, RET/l opens, h backs up.",
         "Fast lanes: Alt-t @todo, Alt-n @notes, Alt-e @tests, Alt-s @source. Try @hot, @blocked, title:reader.",
-        "More lanes: Alt-u @bugs, Alt-w @wisp, Alt-m @reader, Alt-c @codegen, Alt-r :Record.",
-        "Objects: :Test :Record :Source :Concept :Todo :Info.  IDs: ?id or #id.",
+        "More lanes: Alt-u @bugs, Alt-f @functions, Alt-w @wisp, Alt-m @reader, Alt-c @codegen, Alt-r :Record.",
+        "Objects: :Test :Function :Record :Source :Concept :Todo :Info.  IDs: ?id or #id.",
         "Edges: %verifies %supports %blocks %refines %mentions %generated-by.",
         "Category syntax: lhs -> rhs and lhs <- rhs ask for arrows between object sets.",
         "Examples: @tests -> reader  ·  reader <- @tests  ·  %verifies @tests -> codegen.",
         "Graph ops: > outgoing, < incoming, ~ neighborhood, proj conceptual projection.",
+        "Symbol algebra: T test, S source, λ function, ▣ record, I note, ! TODO; arrows ✓ verify, ⊢ support, ⊣ block, ≤ refine, ⇢ link.",
         "Right pane: top is selected object text; bottom is a collapsible color-coded relation tree.",
         "Click ▸/▾ OUT/IN or edge headings to collapse. Click object rows to select targets.",
         "Wheel scrolls results/tree. Footer shows frame/query/flush nanosecond timings.",
@@ -975,6 +1091,7 @@ fn recordTrust(class: []const u8) []const u8 {
 fn objectOneLineMeaning(obj: model.Object) []const u8 {
     return switch (obj.kind) {
         .test_kind => "compiler behavior test / regression contract",
+        .function_kind => "first-class function with searchable type signature",
         .todo => "open work item",
         .done => "completed work / evidence marker",
         .record => "context record: observation, decision, inference, or fix",
@@ -1036,4 +1153,10 @@ test "detail tree row count and cursor action follow visible rows" {
         .select => |target| try std.testing.expect(std.mem.eql(u8, ctx.objects.items[target].id, "b")),
         else => return error.ExpectedCursorSelection,
     }
+}
+
+
+test "record display text hides machine directive header" {
+    const obj = model.Object{ .id = "r", .kind = .record, .title = "OBS", .preview = "[OBS id:x supports:y] Reader layout is stable." };
+    try std.testing.expect(std.mem.eql(u8, objectDisplayText(obj), "Reader layout is stable."));
 }

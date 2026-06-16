@@ -86,3 +86,31 @@ tag:tests
 =reader
 =TODO
 =needlefast
+
+# v0.7.4 report commands to run outside the TUI:
+# zig build query-report
+# zig build test-report
+# zig build perf
+
+# Info pages added in context/info/*.org
+@info
+@info advanced-types
+@info wisp
+@info type-inference
+@info performance
+@info paths
+=monadc.info.advanced-types
+
+# v0.7.6 function/type queries
+@functions
+@functions id
+:Function
+function:id
+sig:a
+signature:a
+# Plain type arrows are interpreted as function signature search, not relation search:
+a -> a
+Int -> Int
+# Relation arrows still work when the sides are object expressions:
+@tests -> reader
+reader <- @tests

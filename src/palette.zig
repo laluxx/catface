@@ -55,6 +55,8 @@ pub const Theme = struct {
     bad: Color = Color.rgb(0xff, 0x5d, 0x73),
     good: Color = Color.rgb(0x55, 0xe6, 0xa5),
     record: Color = Color.rgb(0xd2, 0xf7, 0x79),
+    obs: Color = Color.rgb(0x52, 0xd6, 0xff),
+    function_color: Color = Color.rgb(0xd0, 0xbc, 0xff),
     heading: Color = Color.rgb(0x5e, 0xa7, 0xff),
     script: Color = Color.rgb(0xff, 0xb8, 0x5c),
     concept: Color = Color.rgb(0xff, 0x7a, 0xa8),
@@ -73,6 +75,7 @@ pub const Theme = struct {
         if (std.mem.eql(u8, name, "todo")) return self.todo;
         if (std.mem.eql(u8, name, "done")) return self.done;
         if (std.mem.eql(u8, name, "info")) return self.info;
+        if (std.mem.eql(u8, name, "function_kind")) return self.function_color;
         if (std.mem.eql(u8, name, "report")) return self.warn;
         return self.ink;
     }

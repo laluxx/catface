@@ -1,8 +1,8 @@
-pub const version = "0.7.1";
-pub const codename = "Indexed Focus";
+pub const version = "0.7.6";
+pub const codename = "Function Cache";
 
 pub fn banner() []const u8 {
-    return "Catface 0.7.1 Indexed Focus";
+    return "Catface 0.7.6 Function Cache";
 }
 
 test "version exists" {

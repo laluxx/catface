@@ -8,7 +8,7 @@ const perf = @import("perf.zig");
 const tree = @import("tree.zig");
 const search_index = @import("index.zig");
 
-const IdlePollMs: u32 = 80;
+const IdlePollMs: u32 = 25;
 
 pub fn run(allocator: std.mem.Allocator, ctx: *model.Context) !void {
     var tty = try terminal.Tty.init(allocator);
@@ -45,7 +45,7 @@ fn draw(tty: *terminal.Tty, ctx: *const model.Context, search: *const search_ind
     syncViewports(state, ctx, search, tty.width, tty.height);
     render.drawHeader(tty, lay.header, state.query_buffer.items, state.cursor, state.cursorVisible(state.frame_ms), state.active == .left, ctx, state.results.items.len, theme);
     render.drawResults(tty, lay.left, ctx, state.results.items, state.selected, state.scroll, state.active == .left, theme);
-    render.drawDetailIndexed(tty, lay.right, ctx, search, state.focus, &state.relation_tree, state.active == .right, theme);
+    render.drawDetailIndexed(tty, lay.right, ctx, search, state.focus, &state.relation_tree, state.focus_stack.items, state.active == .right, theme);
     render.drawFooter(tty, lay.footer, state.message, state.perf_stats, theme);
     if (state.show_tutorial) render.drawTutorial(tty, lay, theme);
     const flush_start = perf.nowNs();
@@ -74,15 +74,15 @@ fn handleKey(state: *ui.State, ctx: *const model.Context, search: *const search_
             }
             return true;
         },
-        .tab => { state.active = if (state.active == .left) .right else .left; state.message = if (state.active == .left) "search pane: typing edits the prompt" else "relation pane: n/p move tree, RET opens row, Tab returns to search"; state.markScreenDirty(); },
+        .tab => { state.active = if (state.active == .left) .right else .left; state.message = if (state.active == .left) "search pane: typing edits the prompt" else "relation pane: n/p/j/k move tree, RET/l opens, h backs up; C-n/C-p move results"; state.markScreenDirty(); },
         .up => if (state.active == .right) state.moveTreeCursor(-1) else state.move(-1),
         .down => if (state.active == .right) state.moveTreeCursor(1) else state.move(1),
         .left => if (state.active == .right) state.moveTreeCursor(-1) else state.moveCursorLeft(),
         .right => if (state.active == .right) try openTreeCursor(state, ctx, search) else state.moveCursorRight(),
         .home => if (state.active == .right) state.moveTreeCursor(-9999) else state.beginningOfLine(),
         .end => if (state.active == .right) state.moveTreeCursor(9999) else state.endOfLine(),
-        .page_up => if (state.active == .right) state.scrollTree(-10) else state.scrollResults(-10),
-        .page_down => if (state.active == .right) state.scrollTree(10) else state.scrollResults(10),
+        .page_up => if (state.active == .right) state.scrollTree(-10) else state.pageResults(-1),
+        .page_down => if (state.active == .right) state.scrollTree(10) else state.pageResults(1),
         .enter => if (state.active == .right) try openTreeCursor(state, ctx, search) else try state.followFocused(ctx),
         .backspace => if (state.active == .left) state.backspace() else { state.message = "relation pane active: Tab returns to search"; state.markScreenDirty(); },
         .delete => if (state.active == .left) state.deleteForward() else { state.message = "relation pane active: Tab returns to search"; state.markScreenDirty(); },
@@ -94,6 +94,7 @@ fn handleKey(state: *ui.State, ctx: *const model.Context, search: *const search_
             'e', 'E' => try state.quickQuery("@tests", "tests namespace"),
             's', 'S' => try state.quickQuery("@source", "source/scripts namespace"),
             'i', 'I' => try state.quickQuery("@info", "info/docs namespace"),
+            'f', 'F' => try state.quickQuery("@functions", "core/function/type namespace"),
             'r', 'R' => try state.quickQuery(":Record", "context record objects"),
             'u', 'U' => try state.quickQuery("@bugs", "bug/failure/error surface"),
             'w', 'W' => try state.quickQuery("@wisp", "Wisp language surface"),
@@ -117,8 +118,8 @@ fn handleKey(state: *ui.State, ctx: *const model.Context, search: *const search_
             8 => state.backspace(),            // C-h
             11 => try state.killToEnd(),       // C-k
             12 => { try state.setQuery(""); state.message = "cleared query"; }, // C-l
-            14 => if (state.active == .right) state.moveTreeCursor(1) else state.move(1), // C-n
-            16 => if (state.active == .right) state.moveTreeCursor(-1) else state.move(-1), // C-p
+            14 => state.move(1),             // C-n always moves the main result list
+            16 => state.move(-1),            // C-p always moves the main result list
             20 => try state.quickQuery("@todo", "TODO work queue"), // C-t
             21 => { try state.setQuery(""); state.message = "cleared query"; }, // C-u
             25 => try state.yank(),            // C-y
@@ -129,9 +130,10 @@ fn handleKey(state: *ui.State, ctx: *const model.Context, search: *const search_
                 switch (cp) {
                     'n', 'j' => state.moveTreeCursor(1),
                     'p', 'k' => state.moveTreeCursor(-1),
-                    'o', '\r', '\n' => try openTreeCursor(state, ctx, search),
+                    'h' => { if (!state.goBackFocus()) { state.message = "no relation back target"; state.markScreenDirty(); } },
+                    'o', 'l', '\r', '\n' => try openTreeCursor(state, ctx, search),
                     '?' => state.toggleTutorial(),
-                    else => { state.message = "relation pane active: use n/p, arrows, RET, mouse, or Tab for search"; state.markScreenDirty(); },
+                    else => { state.message = "relation pane active: n/p/j/k move tree, RET/l opens, h backs up; C-n/C-p move results"; state.markScreenDirty(); },
                 }
             } else {
                 switch (cp) {
@@ -148,9 +150,10 @@ fn openTreeCursor(state: *ui.State, ctx: *const model.Context, search: *const se
     const action = render.detailTreeActionAtCursorIndexed(ctx, search, state.focus, &state.relation_tree);
     switch (action) {
         .select => |target| {
+            try state.pushFocusBack(state.focus);
             state.selected = findResultIndex(state.results.items, target) orelse state.selected;
             state.focus = target;
-            state.message = "opened relation target; Tab returns to search, Enter pins as ?id from left pane";
+            state.message = "opened relation target; h goes back, Tab returns to search";
             state.markScreenDirty();
         },
         .toggle_dir, .toggle_group => {
@@ -207,9 +210,10 @@ fn handleMouse(state: *ui.State, ctx: *const model.Context, search: *const searc
         const action = render.detailHitTestIndexed(ctx, search, lay.right, state.focus, &state.relation_tree, m.y);
         switch (action) {
             .select => |target| {
+                try state.pushFocusBack(state.focus);
                 state.selected = findResultIndex(state.results.items, target) orelse state.selected;
                 state.focus = target;
-                state.message = "selected relation-tree target; Enter pins it as ?id";
+                state.message = "selected relation target; h goes back";
                 state.markScreenDirty();
             },
             .toggle_dir => {
@@ -252,4 +256,42 @@ test "tree toggle action mutates tree state" {
     try std.testing.expect(state.relation_tree.dirOpen(.out));
     state.applyTreeAction(.{ .toggle_dir = .out });
     try std.testing.expect(!state.relation_tree.dirOpen(.out));
+}
+
+test "C-n and C-p keep moving the main result list when relation pane is focused" {
+    var state = try ui.State.init(std.testing.allocator);
+    defer state.deinit();
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "a", .kind = .record, .title = "A" });
+    _ = try ctx.addObject(.{ .id = "b", .kind = .record, .title = "B" });
+    var search = try search_index.SearchIndex.build(std.testing.allocator, &ctx);
+    defer search.deinit();
+    try state.setQuery(":Record");
+    try state.refreshIndexed(&ctx, &search);
+    state.active = .right;
+    try std.testing.expect(state.selected == 0);
+    _ = try handleKey(&state, &ctx, &search, .{ .ctrl = 14 }, 80, 24);
+    try std.testing.expect(state.selected == 1);
+    _ = try handleKey(&state, &ctx, &search, .{ .ctrl = 16 }, 80, 24);
+    try std.testing.expect(state.selected == 0);
+}
+
+test "h in relation pane jumps back through relation focus stack" {
+    var state = try ui.State.init(std.testing.allocator);
+    defer state.deinit();
+    var ctx = try model.Context.init(std.testing.allocator, ".");
+    defer ctx.deinit();
+    _ = try ctx.addObject(.{ .id = "a", .kind = .record, .title = "A" });
+    _ = try ctx.addObject(.{ .id = "b", .kind = .record, .title = "B" });
+    var search = try search_index.SearchIndex.build(std.testing.allocator, &ctx);
+    defer search.deinit();
+    try state.setQuery(":Record");
+    try state.refreshIndexed(&ctx, &search);
+    state.active = .right;
+    try state.pushFocusBack(state.focus);
+    state.focus = 1;
+    state.selected = 1;
+    _ = try handleKey(&state, &ctx, &search, .{ .char = 'h' }, 80, 24);
+    try std.testing.expect(state.focus.? == 0);
 }

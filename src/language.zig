@@ -117,10 +117,14 @@ pub fn formatCheatsheet(buf: *std.array_list.Managed(u8)) !void {
         \\  word        fuzzy search
         \\  :Record     kind filter
         \\  @wisp       namespace/lane filter
-        \\  title:x     field filter: title/path/id/preview/tag
+        \\  @info       context/info Org reference pages
+        \\  @functions  first-class core/prelude functions
+        \\  title:x     field filter: title/path/id/preview/tag/function/sig
+        \\  path:context/info  info-page path filter
         \\  @hot        structural/triage lane
         \\  ?id #id     identity filter
         \\  %supports   edge-kind filter
+        \\  a -> a      type-signature search when both sides are type-like
         \\  a -> b      objects connected by morphisms a→b
         \\  a <- b      objects connected by morphisms b→a
         \\  > < ~       outgoing / incoming / neighborhood
