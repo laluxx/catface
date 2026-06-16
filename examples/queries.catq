@@ -1,0 +1,88 @@
+# 󰄛 Catface query cookbook
+# Lines beginning with # are comments. Paste a query into Catface or run:
+#   zig build run -- --query '<query>' ../../../
+
+# Daily triage
+@todo
+@todo reader
+@todo wisp
+@todo codegen
+@bugs
+@bugs reader
+@bugs codegen
+@fix
+
+# Notes and trust levels
+@notes
+@obs
+@dec
+@inf
+@obs reader
+@dec syntax
+@inf type inference
+:Record reader
+:Record path literal
+
+# Tests and coverage
+@tests
+@Test reader
+@Test wisp
+@Test codegen
+@tests -> reader
+reader <- @tests
+%verifies @tests -> reader
+%verifies @tests -> codegen
+%blocks @tests
+
+# Category relation queries
+@todo -> @source
+@notes -> @todo
+@obs -> @tests
+@dec -> @source
+%supports @notes -> reader
+%blocks @todo -> @source
+%refines @notes -> @notes
+
+# Source-specific surfaces
+@reader
+@wisp
+@codegen
+@source reader
+@source wisp
+@source codegen
+@reports
+
+# Graph operators
+reader >
+reader <
+reader ~
+wisp define ~
+codegen proj
+reader layout proj
+
+# Object-card workflow
+# First find an id, then run:
+#   zig build run -- --card '<object-id>' ../../../
+monadc.context.category.index.purpose
+
+# v0.7 indexed search features
+@hot
+@triage
+@blocked
+@blockers
+@roots
+@leaves
+@orphans
+title:reader
+path:reader
+id:monadc.context
+preview:TODO
+tag:tests
+@hot reader
+@blocked -> @source
+@roots -> @leaves
+
+# Exact token probes
+=reader
+=TODO
+=needlefast

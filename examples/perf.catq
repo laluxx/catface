@@ -1,0 +1,23 @@
+# 󰄛 Catface performance probe catalogue
+# Run a handful with --query while watching wall clock, then compare with footer telemetry in the TUI.
+
+needlefast
+@todo
+@hot
+@blocked
+@tests -> reader
+reader <- @tests
+%verifies @tests -> codegen
+%supports @notes -> @source
+reader ~
+wisp define ~
+codegen proj
+title:reader
+path:reader
+preview:TODO
+@roots
+@leaves
+@orphans
+
+=reader
+=needlefast
